@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NK Sprint & Allround | Klassement Tool (Stramien)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand__dot"></div>
+      <div class="brand__text">
+        <div class="brand__title">NK Sprint & NK Allround</div>
+        <div class="brand__sub">Stramien • mockdata • puntberekening (afkappen op 3 decimalen)</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="segmented" id="moduleTabs" aria-label="Module">
+        <button class="segmented__btn" data-module="sprint">NK Sprint</button>
+        <button class="segmented__btn" data-module="allround">NK Allround</button>
+      </div>
+
+      <div class="segmented" id="genderTabs" aria-label="Geslacht">
+        <button class="segmented__btn" data-gender="m">Mannen</button>
+        <button class="segmented__btn" data-gender="v">Vrouwen</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="sidebar__section">
+        <div class="sidebar__title">Views</div>
+        <div class="btnrow" id="viewButtons"></div>
+      </div>
+
+      <div class="sidebar__section">
+        <div class="sidebar__title">Head-to-Head</div>
+        <div class="sidebar__hint">Vergelijk 2 rijders en bepaal welke tijd nodig is om boven een target te komen.</div>
+
+        <div class="form" id="h2hForm">
+          <label class="field">
+            <span>Rijder A</span>
+            <select id="h2hRiderA"></select>
+          </label>
+
+          <label class="field">
+            <span>Rijder B</span>
+            <select id="h2hRiderB"></select>
+          </label>
+
+          <label class="field">
+            <span>Target</span>
+            <select id="h2hTargetMode">
+              <option value="rank">Positie in klassement</option>
+              <option value="rider">Specifieke rijder</option>
+            </select>
+          </label>
+
+          <div class="grid2">
+            <label class="field" id="h2hTargetRankWrap">
+              <span>Target positie</span>
+              <input id="h2hTargetRank" type="number" min="1" value="1" />
+            </label>
+
+            <label class="field hidden" id="h2hTargetRiderWrap">
+              <span>Target rijder</span>
+              <select id="h2hTargetRider"></select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Focusafstand (tijd berekenen)</span>
+            <select id="h2hFocusDistance"></select>
+          </label>
+
+          <button class="btn primary" id="h2hOpen">Open Head-to-Head</button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="card">
+        <div class="card__header">
+          <div>
+            <div class="card__title" id="viewTitle">Klassement</div>
+            <div class="card__meta" id="viewMeta"></div>
+          </div>
+          <div class="pill" id="dataStatus">Mockdata</div>
+        </div>
+
+        <div class="card__body" id="contentArea"></div>
+      </div>
+
+      <div class="footer-note">
+        <strong>Let op:</strong> de koppeling met de live KNSB-uitslagenpagina is nog niet actief. In <code>app.js</code> staat alvast een stub (<code>fetchKnsbResults()</code>) en een verwacht datamodel (<code>resultsRaw</code>).
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
