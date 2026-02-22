@@ -1,9 +1,8 @@
 /* ═══════════════════════════════════════════════════════
-   NK Sprint & NK Allround | Klassement Tool
+   KLASSEMENT — NK Sprint & NK Allround
    ─────────────────────────────────────────────────────
-   - Puntberekening: seconden per 500m, 3 decimalen AFKAPPEN
-   - Head-to-Head: benodigde tijd om boven target te komen
-   - CSV-export
+   Puntberekening : seconden per 500m, 3 decimalen AFKAPPEN
+   Head-to-Head   : benodigde tijd om boven target te komen
    ═══════════════════════════════════════════════════════ */
 
 "use strict";
@@ -33,7 +32,6 @@ const MODULE_CONFIG = {
       },
     },
   },
-
   allround: {
     label: "NK Allround",
     genders: {
@@ -63,62 +61,47 @@ const MODULE_CONFIG = {
 const state = {
   selectedModule: "sprint",
   selectedGender: "m",
-  selectedView: "klassement",    // "distance" | "klassement" | "headToHead"
+  selectedView: "klassement",
   selectedDistanceKey: null,
   resultsRaw: null,
   standings: null,
   h2h: {
     riderAId: null,
     riderBId: null,
-    targetMode: "rank",          // "rank" | "rider"
+    targetMode: "rank",
     targetRank: 1,
     targetRiderId: null,
     focusDistanceKey: null,
   },
 };
 
-// ── Utility: Parsing & Formatting ──────────────────────
-
-/**
- * Parse a time string like "1:09.86" or "34.72" or "13:25,20" to seconds.
- * Accepts both comma and dot as decimal separator.
- */
+// ── Utility ────────────────────────────────────────────
 function parseTimeToSeconds(timeStr) {
   if (!timeStr || typeof timeStr !== "string") return null;
-  const normalized = timeStr.trim().replace(",", ".");
-  if (!normalized) return null;
-
-  const parts = normalized.split(":");
+  const s = timeStr.trim().replace(",", ".");
+  if (!s) return null;
+  const parts = s.split(":");
   if (parts.length > 3) return null;
-
   const nums = parts.map(Number);
   if (!nums.every(Number.isFinite)) return null;
-
   if (parts.length === 1) return nums[0];
   if (parts.length === 2) return nums[0] * 60 + nums[1];
   return nums[0] * 3600 + nums[1] * 60 + nums[2];
 }
 
-/**
- * Truncate to N decimals (NOT round). E.g. truncateDecimals(34.7269, 3) => 34.726
- * Uses string manipulation to avoid floating-point rounding errors.
- */
 function truncateDecimals(value, decimals) {
   if (!Number.isFinite(value)) return null;
-  // Use string-based truncation to avoid float precision issues
-  const str = value.toFixed(decimals + 2); // extra precision
-  const dotIdx = str.indexOf(".");
-  if (dotIdx === -1) return value;
-  const truncated = str.slice(0, dotIdx + decimals + 1);
-  return Number(truncated);
+  const str = value.toFixed(decimals + 2);
+  const dot = str.indexOf(".");
+  if (dot === -1) return value;
+  return Number(str.slice(0, dot + decimals + 1));
 }
 
-function formatPoints(p) {
-  if (!Number.isFinite(p)) return "—";
-  return p.toFixed(3);
+function fmtPts(p) {
+  return Number.isFinite(p) ? p.toFixed(3) : "—";
 }
 
-function formatSecondsToTime(sec) {
+function fmtTime(sec) {
   if (!Number.isFinite(sec)) return "—";
   const sign = sec < 0 ? "-" : "";
   const abs = Math.abs(sec);
@@ -128,569 +111,358 @@ function formatSecondsToTime(sec) {
   return mm > 0 ? `${sign}${mm}:${ssStr}` : `${sign}${ssStr}`;
 }
 
-function formatDelta(delta) {
-  if (!Number.isFinite(delta)) return "—";
-  if (delta === 0) return "";
-  return `+${delta.toFixed(3)}`;
+function fmtDelta(d) {
+  if (!Number.isFinite(d) || d === 0) return "";
+  return `+${d.toFixed(3)}`;
 }
 
-function escapeHtml(str) {
-  return String(str ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function esc(str) {
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");
 }
 
 function getActiveConfig() {
   return MODULE_CONFIG[state.selectedModule].genders[state.selectedGender];
 }
 
-// ── Data: KNSB Stub ────────────────────────────────────
-async function fetchKnsbResults() {
-  // Future: fetch from KNSB live results page.
-  // Expected return format:
-  //   { athletes: [ { athleteId, name, times: { [distKey]: "1:09.86" }, status: { [distKey]: "OK"|"DNS"|"DNF"|"DQ" }, meta: { club } } ] }
-  return null;
-}
+// ── SVG icons (inline) ─────────────────────────────────
+const ICON = {
+  timer:  '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><circle cx="8" cy="9" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 6.5V9l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6.5 2h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  trophy: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M5 13h6M8 10v3M4 3h8v2a4 4 0 0 1-8 0V3ZM4 4H2.5a1 1 0 0 0-1 1v.5A2.5 2.5 0 0 0 4 8M12 4h1.5a1 1 0 0 1 1 1v.5A2.5 2.5 0 0 1 12 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  versus: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M4 12V6M8 12V4M12 12V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+};
 
-// ── Data: Mock Results ─────────────────────────────────
+// ── Data: KNSB Stub ────────────────────────────────────
+async function fetchKnsbResults() { return null; }
+
+// ── Mock Data ──────────────────────────────────────────
 function makeMockResults(moduleKey, genderKey) {
   const cfg = MODULE_CONFIG[moduleKey].genders[genderKey];
-
   const names = {
-    m: ["Rijder A", "Rijder B", "Rijder C", "Rijder D", "Rijder E", "Rijder F", "Rijder G", "Rijder H"],
-    v: ["Rijdster A", "Rijdster B", "Rijdster C", "Rijdster D", "Rijdster E", "Rijdster F", "Rijdster G", "Rijdster H"],
+    m: ["Rijder A","Rijder B","Rijder C","Rijder D","Rijder E","Rijder F","Rijder G","Rijder H"],
+    v: ["Rijdster A","Rijdster B","Rijdster C","Rijdster D","Rijdster E","Rijdster F","Rijdster G","Rijdster H"],
   };
-
   const presets = {
-    sprint_m: [
-      ["34.72", "1:09.86", "34.81", "1:10.11"],
-      ["34.90", "1:10.32", "34.77", "1:10.58"],
-      ["35.10", "1:10.20", "35.08", "1:10.40"],
-      ["34.65", "1:10.70", "34.92", "1:10.88"],
-      ["35.30", "1:11.10", "35.40", "1:11.33"],
-      ["35.55", "1:10.95", "35.49", "1:11.22"],
-      ["34.98", "1:10.05", "35.01", "1:10.25"],
-      ["36.10", "1:12.20", "36.05", "1:12.10"],
-    ],
-    sprint_v: [
-      ["37.88", "1:16.40", "37.92", "1:16.55"],
-      ["38.05", "1:16.10", "38.20", "1:16.45"],
-      ["38.40", "1:17.05", "38.15", "1:16.88"],
-      ["37.70", "1:16.80", "37.85", "1:16.90"],
-      ["39.10", "1:18.30", "39.05", "1:18.15"],
-      ["38.55", "1:17.45", "38.50", "1:17.32"],
-      ["38.20", "1:16.95", "38.30", "1:17.10"],
-      ["40.00", "1:19.90", "40.10", "1:20.10"],
-    ],
-    allround_m: [
-      ["35.10", "1:45.80", "6:25.10", "13:25.20"],
-      ["35.40", "1:46.10", "6:23.90", "13:32.00"],
-      ["35.00", "1:47.30", "6:28.20", "13:40.50"],
-      ["35.90", "1:45.40", "6:26.10", "13:29.80"],
-      ["36.10", "1:48.00", "6:31.40", "13:55.00"],
-      ["35.60", "1:46.50", "6:29.90", "13:44.30"],
-      ["35.20", "1:46.80", "6:24.80", "13:33.10"],
-      ["37.20", "1:52.00", "6:50.00", "14:30.00"],
-    ],
-    allround_v: [
-      ["38.30", "1:58.60", "4:08.10", "7:11.20"],
-      ["38.55", "1:58.20", "4:07.40", "7:09.90"],
-      ["38.10", "1:59.80", "4:10.80", "7:14.30"],
-      ["39.00", "1:57.90", "4:09.20", "7:13.10"],
-      ["39.50", "2:01.40", "4:15.40", "7:20.70"],
-      ["38.80", "1:59.10", "4:12.50", "7:17.80"],
-      ["38.40", "1:58.90", "4:08.90", "7:12.40"],
-      ["41.00", "2:05.00", "4:25.00", "7:35.00"],
-    ],
+    sprint_m: [["34.72","1:09.86","34.81","1:10.11"],["34.90","1:10.32","34.77","1:10.58"],["35.10","1:10.20","35.08","1:10.40"],["34.65","1:10.70","34.92","1:10.88"],["35.30","1:11.10","35.40","1:11.33"],["35.55","1:10.95","35.49","1:11.22"],["34.98","1:10.05","35.01","1:10.25"],["36.10","1:12.20","36.05","1:12.10"]],
+    sprint_v: [["37.88","1:16.40","37.92","1:16.55"],["38.05","1:16.10","38.20","1:16.45"],["38.40","1:17.05","38.15","1:16.88"],["37.70","1:16.80","37.85","1:16.90"],["39.10","1:18.30","39.05","1:18.15"],["38.55","1:17.45","38.50","1:17.32"],["38.20","1:16.95","38.30","1:17.10"],["40.00","1:19.90","40.10","1:20.10"]],
+    allround_m: [["35.10","1:45.80","6:25.10","13:25.20"],["35.40","1:46.10","6:23.90","13:32.00"],["35.00","1:47.30","6:28.20","13:40.50"],["35.90","1:45.40","6:26.10","13:29.80"],["36.10","1:48.00","6:31.40","13:55.00"],["35.60","1:46.50","6:29.90","13:44.30"],["35.20","1:46.80","6:24.80","13:33.10"],["37.20","1:52.00","6:50.00","14:30.00"]],
+    allround_v: [["38.30","1:58.60","4:08.10","7:11.20"],["38.55","1:58.20","4:07.40","7:09.90"],["38.10","1:59.80","4:10.80","7:14.30"],["39.00","1:57.90","4:09.20","7:13.10"],["39.50","2:01.40","4:15.40","7:20.70"],["38.80","1:59.10","4:12.50","7:17.80"],["38.40","1:58.90","4:08.90","7:12.40"],["41.00","2:05.00","4:25.00","7:35.00"]],
   };
-
   const rows = presets[`${moduleKey}_${genderKey}`];
-
-  const athletes = names[genderKey].map((name, idx) => {
-    const times = {};
-    const status = {};
-    const row = rows[idx];
-    cfg.distances.forEach((dist, i) => {
-      times[dist.key] = row[i] ?? null;
-      status[dist.key] = times[dist.key] ? "OK" : "DNS";
-    });
-    return { athleteId: `a${idx + 1}`, name, meta: { club: "—" }, times, status };
-  });
-
-  return { athletes };
+  return {
+    athletes: names[genderKey].map((name, idx) => {
+      const times = {}, status = {};
+      cfg.distances.forEach((d, i) => {
+        times[d.key] = rows[idx][i] ?? null;
+        status[d.key] = times[d.key] ? "OK" : "DNS";
+      });
+      return { athleteId: `a${idx+1}`, name, meta:{ club:"—" }, times, status };
+    }),
+  };
 }
 
-// ── Computation: Points ────────────────────────────────
+// ── Computation ────────────────────────────────────────
 function computeAthletePoints(athlete, distances) {
-  const seconds = {};
-  const points = {};
-  let total = 0;
-  let completedCount = 0;
-
-  for (const dist of distances) {
-    const rawTime = athlete.times?.[dist.key];
-    const st = athlete.status?.[dist.key] ?? (rawTime ? "OK" : "DNS");
-
-    if (st !== "OK") {
-      seconds[dist.key] = null;
-      points[dist.key] = null;
-      continue;
-    }
-
-    const sec = parseTimeToSeconds(rawTime);
-    if (!Number.isFinite(sec)) {
-      seconds[dist.key] = null;
-      points[dist.key] = null;
-      continue;
-    }
-
-    seconds[dist.key] = sec;
-    const p = truncateDecimals(sec / dist.divisor, 3);
-    points[dist.key] = p;
+  const seconds = {}, points = {};
+  let total = 0, count = 0;
+  for (const d of distances) {
+    const raw = athlete.times?.[d.key];
+    const st = athlete.status?.[d.key] ?? (raw ? "OK" : "DNS");
+    if (st !== "OK") { seconds[d.key] = null; points[d.key] = null; continue; }
+    const sec = parseTimeToSeconds(raw);
+    if (!Number.isFinite(sec)) { seconds[d.key] = null; points[d.key] = null; continue; }
+    seconds[d.key] = sec;
+    const p = truncateDecimals(sec / d.divisor, 3);
+    points[d.key] = p;
     total += p;
-    completedCount++;
+    count++;
   }
-
-  const hasAll = completedCount === distances.length;
-  total = hasAll ? truncateDecimals(total, 3) : null;
-
-  return { seconds, points, totalPoints: total, hasAll, completedCount };
+  const hasAll = count === distances.length;
+  return { seconds, points, totalPoints: hasAll ? truncateDecimals(total, 3) : null, hasAll, completedCount: count };
 }
 
-// ── Computation: Standings ─────────────────────────────
 function computeStandings(resultsRaw, distances) {
-  if (!resultsRaw?.athletes?.length) {
-    return { all: [], full: [], partial: [] };
-  }
-
-  const computed = resultsRaw.athletes.map(a => {
-    const c = computeAthletePoints(a, distances);
-    return { ...a, ...c };
-  });
-
-  const full = computed
-    .filter(x => x.totalPoints !== null)
-    .sort((a, b) => a.totalPoints - b.totalPoints);
-
-  const partial = computed
-    .filter(x => x.totalPoints === null)
-    .sort((a, b) => b.completedCount - a.completedCount); // most-complete first
-
-  full.forEach((x, i) => x.rank = i + 1);
+  if (!resultsRaw?.athletes?.length) return { all:[], full:[], partial:[] };
+  const computed = resultsRaw.athletes.map(a => ({ ...a, ...computeAthletePoints(a, distances) }));
+  const full = computed.filter(x => x.totalPoints !== null).sort((a,b) => a.totalPoints - b.totalPoints);
+  const partial = computed.filter(x => x.totalPoints === null).sort((a,b) => b.completedCount - a.completedCount);
+  full.forEach((x,i) => x.rank = i + 1);
   partial.forEach(x => x.rank = null);
-
-  // Compute delta to leader
-  const leaderTotal = full[0]?.totalPoints ?? null;
-  for (const a of full) {
-    a.delta = Number.isFinite(leaderTotal) && Number.isFinite(a.totalPoints)
-      ? truncateDecimals(a.totalPoints - leaderTotal, 3)
-      : null;
-  }
-  for (const a of partial) {
-    a.delta = null;
-  }
-
-  return { all: [...full, ...partial], full, partial };
+  const leader = full[0]?.totalPoints ?? null;
+  for (const a of full) a.delta = Number.isFinite(leader) ? truncateDecimals(a.totalPoints - leader, 3) : null;
+  for (const a of partial) a.delta = null;
+  return { all:[...full, ...partial], full, partial };
 }
 
-// ── Computation: Head-to-Head ──────────────────────────
 function getTargetFromStandings(standings, h2h) {
   if (!standings?.full?.length) return null;
-  if (h2h.targetMode === "rider") {
-    return standings.full.find(x => x.athleteId === h2h.targetRiderId) ?? null;
-  }
-  const idx = Math.max(1, Number(h2h.targetRank || 1)) - 1;
-  return standings.full[idx] ?? null;
+  if (h2h.targetMode === "rider") return standings.full.find(x => x.athleteId === h2h.targetRiderId) ?? null;
+  return standings.full[Math.max(0, (Number(h2h.targetRank) || 1) - 1)] ?? null;
 }
 
-function computeNeededTimeToBeatTarget(standings, distances, athleteId, targetAthlete, focusDistanceKey) {
+function computeH2H(standings, distances, athleteId, target, focusKey) {
   const athlete = standings.all.find(x => x.athleteId === athleteId);
-  if (!athlete || !targetAthlete) {
-    return { ok: false, reason: "Selecteer een rijder en een target." };
+  if (!athlete || !target) return { ok:false, reason:"Selecteer een rijder en een target." };
+  const focusDist = distances.find(d => d.key === focusKey) ?? distances[0];
+  if (!focusDist) return { ok:false, reason:"Geen focusafstand beschikbaar." };
+
+  let cur = 0;
+  for (const d of distances) {
+    if (d.key === focusDist.key) continue;
+    const p = athlete.points?.[d.key];
+    if (!Number.isFinite(p)) return { ok:false, reason:`${athlete.name} mist geldige punten op ${d.label}.` };
+    cur += p;
   }
+  cur = truncateDecimals(cur, 3);
 
-  const focusDist = distances.find(d => d.key === focusDistanceKey) ?? distances[0];
-  if (!focusDist) {
-    return { ok: false, reason: "Geen focusafstand beschikbaar." };
-  }
+  const targetTotal = target.totalPoints;
+  if (!Number.isFinite(targetTotal)) return { ok:false, reason:"Target heeft geen geldig totaal." };
 
-  // Sum all points EXCEPT the focus distance
-  let currentWithout = 0;
-  for (const dist of distances) {
-    if (dist.key === focusDist.key) continue;
-    const p = athlete.points?.[dist.key];
-    if (!Number.isFinite(p)) {
-      return { ok: false, reason: `${athlete.name} mist geldige punten op ${dist.label}.` };
-    }
-    currentWithout += p;
-  }
-  currentWithout = truncateDecimals(currentWithout, 3);
+  const allowed = truncateDecimals(targetTotal - 0.001, 3);
+  const allowedFocus = truncateDecimals(allowed - cur, 3);
+  if (!Number.isFinite(allowedFocus) || allowedFocus <= 0) return { ok:false, reason:"Onmogelijk om boven het target te komen met de huidige tussenstand." };
 
-  const targetTotal = targetAthlete.totalPoints;
-  if (!Number.isFinite(targetTotal)) {
-    return { ok: false, reason: "Target heeft geen geldig totaal." };
-  }
-
-  // To beat the target: athlete total must be < targetTotal
-  // After truncation to 3 decimals, we need: truncated total < targetTotal
-  // Safe approach: allowed total = targetTotal - 0.001 (strict beat)
-  const allowedTotal = truncateDecimals(targetTotal - 0.001, 3);
-  const allowedPointsForFocus = truncateDecimals(allowedTotal - currentWithout, 3);
-
-  if (!Number.isFinite(allowedPointsForFocus) || allowedPointsForFocus <= 0) {
-    return { ok: false, reason: "Onmogelijk om boven target te komen met de huidige tussenstand." };
-  }
-
-  // Max allowed points → convert back to time
-  // points = time / divisor  →  time = points * divisor
-  // But since points are truncated, we need to add back the truncation margin:
-  // The maximum raw time that still truncates to allowedPointsForFocus is:
-  //   (allowedPointsForFocus + 0.000999...) * divisor
-  const maxTimeSeconds = (allowedPointsForFocus + 0.000999) * focusDist.divisor;
-
-  return {
-    ok: true,
-    athlete,
-    targetAthlete,
-    focusDist,
-    currentPointsWithoutFocus: currentWithout,
-    allowedTotal,
-    allowedPointsForFocus,
-    maxTimeSeconds,
-  };
+  const maxTime = (allowedFocus + 0.000999) * focusDist.divisor;
+  return { ok:true, athlete, targetAthlete:target, focusDist, currentWithout:cur, allowedTotal:allowed, allowedFocus, maxTime };
 }
 
-// ── DOM Elements ───────────────────────────────────────
+// ── DOM Cache ──────────────────────────────────────────
 const el = {};
-function cacheElements() {
-  const ids = [
-    "moduleTabs", "genderTabs", "viewButtons", "viewTitle", "viewMeta",
-    "contentArea", "h2hRiderA", "h2hRiderB", "h2hTargetMode",
-    "h2hTargetRankWrap", "h2hTargetRank", "h2hTargetRiderWrap",
-    "h2hTargetRider", "h2hFocusDistance", "h2hOpen", "exportBtn",
-  ];
-  for (const id of ids) {
-    el[id] = document.getElementById(id);
-    if (!el[id]) console.warn(`[Klassement] Missing DOM element: #${id}`);
-  }
+function cacheEls() {
+  ["moduleTabs","genderTabs","viewButtons","viewTitle","viewMeta","contentArea",
+   "h2hRiderA","h2hRiderB","h2hTargetMode","h2hTargetRankWrap","h2hTargetRank",
+   "h2hTargetRiderWrap","h2hTargetRider","h2hFocusDistance","h2hOpen","exportBtn","toast"
+  ].forEach(id => { el[id] = document.getElementById(id); });
 }
 
-// ── Rendering Helpers ──────────────────────────────────
-function renderSegmentedActive(container, dataKey, value) {
+// ── Render Helpers ─────────────────────────────────────
+function setActive(container, key, value) {
   if (!container) return;
-  for (const btn of container.querySelectorAll("button")) {
-    btn.classList.toggle("active", btn.dataset[dataKey] === value);
-  }
+  container.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset[key] === value));
 }
 
-function renderSelectOptions(selectEl, options, selectedValue) {
-  if (!selectEl) return;
-  selectEl.innerHTML = "";
-  for (const opt of options) {
-    const o = document.createElement("option");
-    o.value = opt.value;
-    o.textContent = opt.label;
-    selectEl.appendChild(o);
-  }
-  if (selectedValue != null) selectEl.value = selectedValue;
+function fillSelect(sel, opts, val) {
+  if (!sel) return;
+  sel.innerHTML = opts.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("");
+  if (val != null) sel.value = val;
 }
 
-function renderMeta(cfg) {
-  const moduleLabel = MODULE_CONFIG[state.selectedModule].label;
-  const genderLabel = cfg.label;
-  const distances = cfg.distances.map(d => d.label).join(" · ");
-  el.viewMeta.textContent = `${moduleLabel} — ${genderLabel} — ${distances}`;
+function rankHtml(r) {
+  if (r >= 1 && r <= 3) return `<span class="rank rank--${r}">${r}</span>`;
+  return `<span class="rank">${r ?? "—"}</span>`;
 }
 
-function rankBadgeHtml(rank) {
-  if (rank >= 1 && rank <= 3) {
-    return `<span class="rank-badge rank-badge--${rank}">${rank}</span>`;
-  }
-  return `<span style="display:inline-block;width:26px;text-align:center;font-weight:700;font-size:13px;color:var(--muted)">${rank ?? "—"}</span>`;
+function stHtml(s) {
+  const c = s === "OK" ? "ok" : s === "DQ" ? "dq" : "dns";
+  return `<span class="st st--${c}">${esc(s)}</span>`;
 }
 
-function statusBadgeHtml(status) {
-  const cls = status === "OK" ? "status--ok" : "status--dns";
-  return `<span class="status ${cls}">${escapeHtml(status)}</span>`;
-}
-
-function podiumClass(rank) {
-  if (rank >= 1 && rank <= 3) return `podium-${rank}`;
-  return "";
-}
+function podCls(r) { return r >= 1 && r <= 3 ? `podium-${r}` : ""; }
 
 // ── Render: View Buttons ───────────────────────────────
 function renderViewButtons(distances) {
   if (!el.viewButtons) return;
   el.viewButtons.innerHTML = "";
 
-  for (const dist of distances) {
+  distances.forEach(d => {
     const b = document.createElement("button");
-    b.className = "btn";
-    b.textContent = dist.label;
-    b.onclick = () => {
-      state.selectedView = "distance";
-      state.selectedDistanceKey = dist.key;
-      render();
-    };
-    if (state.selectedView === "distance" && state.selectedDistanceKey === dist.key) {
-      b.classList.add("active");
-    }
+    b.className = "view-btn";
+    b.innerHTML = `<span class="view-btn__icon">${ICON.timer}</span>${esc(d.label)}`;
+    b.onclick = () => { state.selectedView = "distance"; state.selectedDistanceKey = d.key; render(); };
+    if (state.selectedView === "distance" && state.selectedDistanceKey === d.key) b.classList.add("active");
     el.viewButtons.appendChild(b);
-  }
+  });
 
-  const kBtn = document.createElement("button");
-  kBtn.className = "btn";
-  kBtn.textContent = "Klassement";
-  kBtn.onclick = () => { state.selectedView = "klassement"; state.selectedDistanceKey = null; render(); };
-  if (state.selectedView === "klassement") kBtn.classList.add("active");
-  el.viewButtons.appendChild(kBtn);
+  const k = document.createElement("button");
+  k.className = "view-btn";
+  k.innerHTML = `<span class="view-btn__icon">${ICON.trophy}</span>Klassement`;
+  k.onclick = () => { state.selectedView = "klassement"; state.selectedDistanceKey = null; render(); };
+  if (state.selectedView === "klassement") k.classList.add("active");
+  el.viewButtons.appendChild(k);
 
-  const hBtn = document.createElement("button");
-  hBtn.className = "btn";
-  hBtn.textContent = "Head-to-Head";
-  hBtn.onclick = () => { state.selectedView = "headToHead"; render(); };
-  if (state.selectedView === "headToHead") hBtn.classList.add("active");
-  el.viewButtons.appendChild(hBtn);
+  const h = document.createElement("button");
+  h.className = "view-btn";
+  h.innerHTML = `<span class="view-btn__icon">${ICON.versus}</span>Head-to-Head`;
+  h.onclick = () => { state.selectedView = "headToHead"; render(); };
+  if (state.selectedView === "headToHead") h.classList.add("active");
+  el.viewButtons.appendChild(h);
 }
 
 // ── Render: H2H Form ──────────────────────────────────
 function renderH2HForm(cfg, standings) {
-  const athletes = standings.all.map(a => ({ value: a.athleteId, label: `${a.name}${a.rank ? ` (#${a.rank})` : ""}` }));
-  const distances = cfg.distances.map(d => ({ value: d.key, label: d.label }));
+  const ath = standings.all.map(a => ({ value:a.athleteId, label:`${a.name}${a.rank ? ` (#${a.rank})` : ""}` }));
+  const dis = cfg.distances.map(d => ({ value:d.key, label:d.label }));
 
-  if (!state.h2h.riderAId) state.h2h.riderAId = athletes[0]?.value ?? null;
-  if (!state.h2h.riderBId) state.h2h.riderBId = athletes[1]?.value ?? athletes[0]?.value ?? null;
-  if (!state.h2h.focusDistanceKey) state.h2h.focusDistanceKey = distances[0]?.value ?? null;
+  if (!state.h2h.riderAId) state.h2h.riderAId = ath[0]?.value ?? null;
+  if (!state.h2h.riderBId) state.h2h.riderBId = ath[1]?.value ?? ath[0]?.value ?? null;
+  if (!state.h2h.focusDistanceKey) state.h2h.focusDistanceKey = dis[0]?.value ?? null;
 
-  renderSelectOptions(el.h2hRiderA, athletes, state.h2h.riderAId);
-  renderSelectOptions(el.h2hRiderB, athletes, state.h2h.riderBId);
-  renderSelectOptions(el.h2hTargetRider, athletes, state.h2h.targetRiderId ?? athletes[0]?.value ?? null);
-  renderSelectOptions(el.h2hFocusDistance, distances, state.h2h.focusDistanceKey);
+  fillSelect(el.h2hRiderA, ath, state.h2h.riderAId);
+  fillSelect(el.h2hRiderB, ath, state.h2h.riderBId);
+  fillSelect(el.h2hTargetRider, ath, state.h2h.targetRiderId ?? ath[0]?.value ?? null);
+  fillSelect(el.h2hFocusDistance, dis, state.h2h.focusDistanceKey);
 
   const isRank = state.h2h.targetMode === "rank";
   el.h2hTargetRankWrap?.classList.toggle("hidden", !isRank);
   el.h2hTargetRiderWrap?.classList.toggle("hidden", isRank);
-
   if (el.h2hTargetMode) el.h2hTargetMode.value = state.h2h.targetMode;
   if (el.h2hTargetRank) el.h2hTargetRank.value = String(state.h2h.targetRank || 1);
+}
+
+// ── Render: Meta ───────────────────────────────────────
+function renderMeta(cfg) {
+  const m = MODULE_CONFIG[state.selectedModule].label;
+  const g = cfg.label;
+  const d = cfg.distances.map(x => x.label).join("  ·  ");
+  if (el.viewMeta) el.viewMeta.textContent = `${m} — ${g} — ${d}`;
 }
 
 // ── Render: Distance View ──────────────────────────────
 function renderDistanceView(dist, standings) {
   const rows = standings.all
-    .map(a => ({
-      name: a.name,
-      time: a.times?.[dist.key] ?? "—",
-      sec: a.seconds?.[dist.key] ?? null,
-      points: a.points?.[dist.key] ?? null,
-      status: a.status?.[dist.key] ?? "—",
-    }))
-    .sort((a, b) => {
-      if ((a.status === "OK") !== (b.status === "OK")) return a.status === "OK" ? -1 : 1;
-      if (!Number.isFinite(a.sec) || !Number.isFinite(b.sec)) return 0;
-      return a.sec - b.sec;
-    });
+    .map(a => ({ name:a.name, time:a.times?.[dist.key]??"—", sec:a.seconds?.[dist.key]??null, pts:a.points?.[dist.key]??null, st:a.status?.[dist.key]??"—" }))
+    .sort((a,b) => { if ((a.st==="OK")!==(b.st==="OK")) return a.st==="OK"?-1:1; if (!Number.isFinite(a.sec)||!Number.isFinite(b.sec)) return 0; return a.sec-b.sec; });
 
-  // Calculate deltas to fastest
-  const fastest = rows[0]?.sec ?? null;
-  rows.forEach(r => {
-    r.delta = Number.isFinite(r.sec) && Number.isFinite(fastest) ? r.sec - fastest : null;
-  });
+  const fast = rows[0]?.sec ?? null;
+  rows.forEach(r => r.delta = Number.isFinite(r.sec) && Number.isFinite(fast) ? r.sec - fast : null);
 
   el.viewTitle.textContent = dist.label;
-  el.contentArea.className = "card__body card__body--enter";
+  el.contentArea.className = "stage__body stage__body--enter";
   el.contentArea.innerHTML = `
     <div class="table-wrap">
       <table class="table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Naam</th>
-            <th>Tijd</th>
-            <th>Delta</th>
-            <th>Punten</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map((r, i) => {
-            const rank = i + 1;
-            return `
-              <tr class="${podiumClass(rank)}">
-                <td>${rankBadgeHtml(rank)}</td>
-                <td><strong>${escapeHtml(r.name)}</strong></td>
-                <td class="num">${escapeHtml(r.time)}</td>
-                <td class="delta ${r.delta === 0 ? 'delta--leader' : ''}">${r.delta === 0 ? "—" : (Number.isFinite(r.delta) ? `+${r.delta.toFixed(2)}` : "—")}</td>
-                <td class="num">${Number.isFinite(r.points) ? formatPoints(r.points) : "—"}</td>
-                <td>${statusBadgeHtml(r.status)}</td>
-              </tr>`;
-          }).join("")}
-        </tbody>
+        <thead><tr><th>#</th><th>Naam</th><th>Tijd</th><th>Delta</th><th>Punten</th><th>Status</th></tr></thead>
+        <tbody>${rows.map((r,i) => {
+          const rk = i+1;
+          return `<tr class="${podCls(rk)}">
+            <td>${rankHtml(rk)}</td>
+            <td><span class="athlete-name">${esc(r.name)}</span></td>
+            <td class="mono">${esc(r.time)}</td>
+            <td>${r.delta===0?`<span class="delta delta--leader">Snelst</span>`:Number.isFinite(r.delta)?`<span class="delta">+${r.delta.toFixed(2)}s</span>`:""}</td>
+            <td class="mono">${fmtPts(r.pts)}</td>
+            <td>${stHtml(r.st)}</td>
+          </tr>`;
+        }).join("")}</tbody>
       </table>
-    </div>
-  `;
+    </div>`;
 }
 
 // ── Render: Klassement View ────────────────────────────
 function renderStandingsView(distances, standings) {
   el.viewTitle.textContent = "Klassement";
-  el.contentArea.className = "card__body card__body--enter";
+  el.contentArea.className = "stage__body stage__body--enter";
 
-  const headers = distances.map(d => `<th>${escapeHtml(d.label)}</th>`).join("");
+  const hdr = distances.map(d => `<th>${esc(d.label)}</th>`).join("");
   const body = standings.all.map(a => {
-    const cells = distances.map(d => {
-      const p = a.points?.[d.key];
-      return `<td class="num">${Number.isFinite(p) ? formatPoints(p) : "—"}</td>`;
-    }).join("");
-
-    const total = a.totalPoints;
-    const rank = a.rank;
-
-    return `
-      <tr class="${podiumClass(rank)}">
-        <td>${rankBadgeHtml(rank)}</td>
-        <td><strong>${escapeHtml(a.name)}</strong></td>
-        ${cells}
-        <td class="num num--total">${Number.isFinite(total) ? formatPoints(total) : "—"}</td>
-        <td class="delta ${a.delta === 0 ? 'delta--leader' : ''}">${a.delta === 0 ? "—" : formatDelta(a.delta)}</td>
-      </tr>`;
+    const cells = distances.map(d => `<td class="mono">${fmtPts(a.points?.[d.key])}</td>`).join("");
+    return `<tr class="${podCls(a.rank)}">
+      <td>${rankHtml(a.rank)}</td>
+      <td><span class="athlete-name">${esc(a.name)}</span></td>
+      ${cells}
+      <td class="mono mono--bold">${fmtPts(a.totalPoints)}</td>
+      <td>${a.delta===0?`<span class="delta delta--leader">Leader</span>`:a.delta?`<span class="delta">${fmtDelta(a.delta)}</span>`:""}</td>
+    </tr>`;
   }).join("");
 
   el.contentArea.innerHTML = `
     <div class="table-wrap">
       <table class="table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Naam</th>
-            ${headers}
-            <th>Totaal</th>
-            <th>Delta</th>
-          </tr>
-        </thead>
+        <thead><tr><th>#</th><th>Naam</th>${hdr}<th>Totaal</th><th>Delta</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
     </div>
-    <div class="note">
-      <strong>Regel:</strong> punten per afstand = (tijd in sec) ÷ (meters ÷ 500), <strong>afgekapt op 3 decimalen</strong>.
-      Laagste totaalscore = eerste in het klassement.
-    </div>
-  `;
+    <div class="info-box info-box--default">
+      <strong>Regel:</strong> punten per afstand = (tijd in sec) ÷ (meters ÷ 500), <strong>afgekapt op 3 decimalen</strong>. Laagste totaal = eerste in het klassement.
+    </div>`;
 }
 
 // ── Render: Head-to-Head View ──────────────────────────
 function renderHeadToHeadView(distances, standings) {
   el.viewTitle.textContent = "Head-to-Head";
-  el.contentArea.className = "card__body card__body--enter";
+  el.contentArea.className = "stage__body stage__body--enter";
 
   const { h2h } = state;
-  const riderA = standings.all.find(x => x.athleteId === h2h.riderAId);
-  const riderB = standings.all.find(x => x.athleteId === h2h.riderBId);
+  const rA = standings.all.find(x => x.athleteId === h2h.riderAId);
+  const rB = standings.all.find(x => x.athleteId === h2h.riderBId);
 
-  // Build comparison table
-  let comparisonHtml = "";
-  if (riderA && riderB) {
-    const compRows = distances.map(d => {
-      const pA = riderA.points?.[d.key];
-      const pB = riderB.points?.[d.key];
-      const tA = riderA.times?.[d.key] ?? "—";
-      const tB = riderB.times?.[d.key] ?? "—";
-
-      let clsA = "", clsB = "";
+  // Comparison table
+  let cmpHtml = "";
+  if (rA && rB) {
+    const rows = distances.map(d => {
+      const pA = rA.points?.[d.key], pB = rB.points?.[d.key];
+      const tA = rA.times?.[d.key]??"—", tB = rB.times?.[d.key]??"—";
+      let cA="", cB="";
       if (Number.isFinite(pA) && Number.isFinite(pB)) {
-        if (pA < pB) { clsA = "better"; clsB = "worse"; }
-        else if (pB < pA) { clsB = "better"; clsA = "worse"; }
+        if (pA < pB) { cA="win"; cB="lose"; } else if (pB < pA) { cB="win"; cA="lose"; }
       }
-
-      return `
-        <tr>
-          <td><strong>${escapeHtml(d.label)}</strong></td>
-          <td class="num ${clsA}">${escapeHtml(tA)}</td>
-          <td class="num ${clsA}">${Number.isFinite(pA) ? formatPoints(pA) : "—"}</td>
-          <td class="num ${clsB}">${escapeHtml(tB)}</td>
-          <td class="num ${clsB}">${Number.isFinite(pB) ? formatPoints(pB) : "—"}</td>
-          <td class="num">${Number.isFinite(pA) && Number.isFinite(pB) ? formatPoints(truncateDecimals(pA - pB, 3)) : "—"}</td>
-        </tr>`;
+      const diff = (Number.isFinite(pA) && Number.isFinite(pB)) ? truncateDecimals(pA-pB, 3) : null;
+      return `<tr>
+        <td><strong>${esc(d.label)}</strong></td>
+        <td class="mono ${cA}">${esc(tA)}</td><td class="mono ${cA}">${fmtPts(pA)}</td>
+        <td class="mono ${cB}">${esc(tB)}</td><td class="mono ${cB}">${fmtPts(pB)}</td>
+        <td class="mono">${Number.isFinite(diff)? (diff>0?"+":"")+diff.toFixed(3) : "—"}</td>
+      </tr>`;
     }).join("");
 
-    const totA = riderA.totalPoints;
-    const totB = riderB.totalPoints;
-    let totClsA = "", totClsB = "";
-    if (Number.isFinite(totA) && Number.isFinite(totB)) {
-      if (totA < totB) { totClsA = "better"; totClsB = "worse"; }
-      else if (totB < totA) { totClsB = "better"; totClsA = "worse"; }
-    }
+    const tA = rA.totalPoints, tB = rB.totalPoints;
+    let tcA="", tcB="";
+    if (Number.isFinite(tA) && Number.isFinite(tB)) { if (tA<tB){tcA="win";tcB="lose";}else if(tB<tA){tcB="win";tcA="lose";} }
+    const tDiff = (Number.isFinite(tA)&&Number.isFinite(tB)) ? truncateDecimals(tA-tB,3) : null;
 
-    comparisonHtml = `
-      <div class="h2h-compare">
-        <div class="table-wrap">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Afstand</th>
-                <th colspan="2">${escapeHtml(riderA.name)} (#${riderA.rank ?? "—"})</th>
-                <th colspan="2">${escapeHtml(riderB.name)} (#${riderB.rank ?? "—"})</th>
-                <th>Verschil</th>
-              </tr>
-              <tr>
-                <th></th>
-                <th>Tijd</th>
-                <th>Pnt</th>
-                <th>Tijd</th>
-                <th>Pnt</th>
-                <th>A − B</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${compRows}
-              <tr style="font-weight:700;border-top:2px solid var(--border)">
-                <td><strong>Totaal</strong></td>
-                <td></td>
-                <td class="num num--total ${totClsA}">${Number.isFinite(totA) ? formatPoints(totA) : "—"}</td>
-                <td></td>
-                <td class="num num--total ${totClsB}">${Number.isFinite(totB) ? formatPoints(totB) : "—"}</td>
-                <td class="num num--total">${Number.isFinite(totA) && Number.isFinite(totB) ? formatPoints(truncateDecimals(totA - totB, 3)) : "—"}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>`;
+    cmpHtml = `
+    <div class="h2h-section">
+      <div class="h2h-section__title">Vergelijking per afstand</div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>Afstand</th><th colspan="2">${esc(rA.name)} #${rA.rank??"—"}</th><th colspan="2">${esc(rB.name)} #${rB.rank??"—"}</th><th>Δ (A−B)</th></tr>
+            <tr><th></th><th>Tijd</th><th>Pnt</th><th>Tijd</th><th>Pnt</th><th></th></tr>
+          </thead>
+          <tbody>
+            ${rows}
+            <tr class="total-row">
+              <td><strong>Totaal</strong></td>
+              <td></td><td class="mono mono--bold ${tcA}">${fmtPts(tA)}</td>
+              <td></td><td class="mono mono--bold ${tcB}">${fmtPts(tB)}</td>
+              <td class="mono mono--bold">${Number.isFinite(tDiff)? (tDiff>0?"+":"")+tDiff.toFixed(3) : "—"}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
   }
 
   // Target calculation
   const target = getTargetFromStandings(standings, h2h);
-  const calc = computeNeededTimeToBeatTarget(standings, distances, h2h.riderAId, target, h2h.focusDistanceKey);
+  const calc = computeH2H(standings, distances, h2h.riderAId, target, h2h.focusDistanceKey);
 
-  let summaryHtml = "";
+  let calcHtml = "";
   if (!calc.ok) {
-    summaryHtml = `<div class="note note--error"><strong>Niet beschikbaar:</strong> ${escapeHtml(calc.reason)}</div>`;
+    calcHtml = `<div class="info-box info-box--error"><strong>Niet beschikbaar:</strong> ${esc(calc.reason)}</div>`;
   } else {
-    summaryHtml = `
-      <div class="kpi">
-        <div class="box">
-          <div class="label">Target totaal</div>
-          <div class="value">${formatPoints(calc.targetAthlete.totalPoints)}</div>
+    calcHtml = `
+    <div class="h2h-section">
+      <div class="h2h-section__title">Target berekening</div>
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-card__label">Target totaal (punten)</div>
+          <div class="kpi-card__value">${fmtPts(calc.targetAthlete.totalPoints)}</div>
         </div>
-        <div class="box">
-          <div class="label">Punten zonder ${escapeHtml(calc.focusDist.label)}</div>
-          <div class="value">${formatPoints(calc.currentPointsWithoutFocus)}</div>
+        <div class="kpi-card">
+          <div class="kpi-card__label">Punten zonder ${esc(calc.focusDist.label)}</div>
+          <div class="kpi-card__value">${fmtPts(calc.currentWithout)}</div>
         </div>
-        <div class="box box--highlight">
-          <div class="label">Max. tijd op ${escapeHtml(calc.focusDist.label)}</div>
-          <div class="value">${formatSecondsToTime(calc.maxTimeSeconds)}</div>
+        <div class="kpi-card kpi-card--highlight">
+          <div class="kpi-card__label">Max. tijd op ${esc(calc.focusDist.label)}</div>
+          <div class="kpi-card__value">${fmtTime(calc.maxTime)}</div>
         </div>
       </div>
-      <div class="note">
-        <strong>Berekening:</strong> punten worden afgekapt op 3 decimalen. Er wordt een marge van
-        <code>0.001</code> punt gehanteerd om "strikt beter" te zijn dan het target.
-      </div>`;
+      <div class="info-box info-box--default">
+        <strong>Berekening:</strong> punten worden afgekapt op 3 decimalen met een marge van <code>0.001</code> punt om strikt beter te zijn dan het target.
+      </div>
+    </div>`;
   }
 
-  el.contentArea.innerHTML = `${comparisonHtml}${summaryHtml}`;
+  el.contentArea.innerHTML = cmpHtml + calcHtml;
 }
 
 // ── CSV Export ─────────────────────────────────────────
@@ -699,146 +471,101 @@ function exportCSV() {
   const { standings } = state;
   if (!standings?.all?.length) return;
 
-  const moduleLabel = MODULE_CONFIG[state.selectedModule].label;
-  const genderLabel = cfg.label;
+  const hdr = ["Positie","Naam",...cfg.distances.map(d=>`Pnt ${d.label}`),"Totaal","Delta"];
+  const rows = standings.all.map(a => [
+    a.rank??"",
+    a.name,
+    ...cfg.distances.map(d => { const p=a.points?.[d.key]; return Number.isFinite(p)?p.toFixed(3):""; }),
+    Number.isFinite(a.totalPoints)?a.totalPoints.toFixed(3):"",
+    Number.isFinite(a.delta)?`+${a.delta.toFixed(3)}`:""
+  ]);
 
-  const headers = ["Positie", "Naam", ...cfg.distances.map(d => `Pnt ${d.label}`), "Totaal", "Delta"];
-  const rows = standings.all.map(a => {
-    const cells = cfg.distances.map(d => {
-      const p = a.points?.[d.key];
-      return Number.isFinite(p) ? p.toFixed(3) : "";
-    });
-    return [
-      a.rank ?? "",
-      a.name,
-      ...cells,
-      Number.isFinite(a.totalPoints) ? a.totalPoints.toFixed(3) : "",
-      Number.isFinite(a.delta) ? `+${a.delta.toFixed(3)}` : "",
-    ];
-  });
-
-  const csvContent = [headers, ...rows]
-    .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(";"))
-    .join("\n");
-
-  const bom = "\uFEFF"; // BOM for Excel UTF-8 compatibility
-  const blob = new Blob([bom + csvContent], { type: "text/csv;charset=utf-8;" });
+  const csv = [hdr,...rows].map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = `klassement_${state.selectedModule}_${state.selectedGender}.csv`;
   a.click();
   URL.revokeObjectURL(url);
-
-  showToast("CSV geëxporteerd!");
+  showToast("CSV geëxporteerd");
 }
 
-function showToast(message) {
-  let toast = document.querySelector(".toast");
-  if (!toast) {
-    toast = document.createElement("div");
-    toast.className = "toast";
-    document.body.appendChild(toast);
-  }
-  toast.textContent = message;
-  toast.classList.add("show");
-  setTimeout(() => toast.classList.remove("show"), 2200);
+function showToast(msg) {
+  const t = el.toast;
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 2500);
 }
 
-// ── Events ─────────────────────────────────────────────
-function bindHeaderEvents() {
-  el.moduleTabs?.addEventListener("click", (e) => {
+// ── Event Binding ──────────────────────────────────────
+function bindEvents() {
+  el.moduleTabs?.addEventListener("click", e => {
     const btn = e.target.closest("button[data-module]");
     if (!btn || btn.dataset.module === state.selectedModule) return;
-
     state.selectedModule = btn.dataset.module;
-    state.selectedView = "klassement";
-    state.selectedDistanceKey = null;
-    state.h2h.focusDistanceKey = getActiveConfig().distances[0]?.key ?? null;
-    state.h2h.riderAId = null;
-    state.h2h.riderBId = null;
-
-    loadDataAndCompute();
-    render();
+    resetViewState();
+    loadAndRender();
   });
 
-  el.genderTabs?.addEventListener("click", (e) => {
+  el.genderTabs?.addEventListener("click", e => {
     const btn = e.target.closest("button[data-gender]");
     if (!btn || btn.dataset.gender === state.selectedGender) return;
-
     state.selectedGender = btn.dataset.gender;
-    state.selectedView = "klassement";
-    state.selectedDistanceKey = null;
-    state.h2h.focusDistanceKey = getActiveConfig().distances[0]?.key ?? null;
-    state.h2h.riderAId = null;
-    state.h2h.riderBId = null;
-
-    loadDataAndCompute();
-    render();
+    resetViewState();
+    loadAndRender();
   });
-}
 
-function bindH2HEvents() {
-  el.h2hRiderA?.addEventListener("change", () => { state.h2h.riderAId = el.h2hRiderA.value || null; render(); });
-  el.h2hRiderB?.addEventListener("change", () => { state.h2h.riderBId = el.h2hRiderB.value || null; render(); });
+  el.h2hRiderA?.addEventListener("change", () => { state.h2h.riderAId = el.h2hRiderA.value||null; render(); });
+  el.h2hRiderB?.addEventListener("change", () => { state.h2h.riderBId = el.h2hRiderB.value||null; render(); });
   el.h2hTargetMode?.addEventListener("change", () => { state.h2h.targetMode = el.h2hTargetMode.value; render(); });
-  el.h2hTargetRank?.addEventListener("input", () => {
-    const v = Number(el.h2hTargetRank.value);
-    state.h2h.targetRank = Number.isFinite(v) && v >= 1 ? Math.floor(v) : 1;
-    render();
-  });
-  el.h2hTargetRider?.addEventListener("change", () => { state.h2h.targetRiderId = el.h2hTargetRider.value || null; render(); });
-  el.h2hFocusDistance?.addEventListener("change", () => { state.h2h.focusDistanceKey = el.h2hFocusDistance.value || null; render(); });
-  el.h2hOpen?.addEventListener("click", (e) => { e.preventDefault(); state.selectedView = "headToHead"; render(); });
-}
-
-function bindExportEvent() {
+  el.h2hTargetRank?.addEventListener("input", () => { const v=Number(el.h2hTargetRank.value); state.h2h.targetRank = (Number.isFinite(v)&&v>=1)?Math.floor(v):1; render(); });
+  el.h2hTargetRider?.addEventListener("change", () => { state.h2h.targetRiderId = el.h2hTargetRider.value||null; render(); });
+  el.h2hFocusDistance?.addEventListener("change", () => { state.h2h.focusDistanceKey = el.h2hFocusDistance.value||null; render(); });
+  el.h2hOpen?.addEventListener("click", e => { e.preventDefault(); state.selectedView="headToHead"; render(); });
   el.exportBtn?.addEventListener("click", exportCSV);
 }
 
-// ── Main Render & Boot ─────────────────────────────────
-function loadDataAndCompute() {
+function resetViewState() {
+  state.selectedView = "klassement";
+  state.selectedDistanceKey = null;
+  state.h2h.riderAId = null;
+  state.h2h.riderBId = null;
+  state.h2h.focusDistanceKey = getActiveConfig().distances[0]?.key ?? null;
+}
+
+// ── Main ───────────────────────────────────────────────
+function loadData() {
   state.resultsRaw = makeMockResults(state.selectedModule, state.selectedGender);
-  const cfg = getActiveConfig();
-  state.standings = computeStandings(state.resultsRaw, cfg.distances);
+  state.standings = computeStandings(state.resultsRaw, getActiveConfig().distances);
 }
 
 function render() {
   const cfg = getActiveConfig();
-
-  renderSegmentedActive(el.moduleTabs, "module", state.selectedModule);
-  renderSegmentedActive(el.genderTabs, "gender", state.selectedGender);
+  setActive(el.moduleTabs, "module", state.selectedModule);
+  setActive(el.genderTabs, "gender", state.selectedGender);
   renderMeta(cfg);
   renderViewButtons(cfg.distances);
-
-  if (state.selectedView === "distance" && !state.selectedDistanceKey) {
-    state.selectedDistanceKey = cfg.distances[0]?.key ?? null;
-  }
-
+  if (state.selectedView === "distance" && !state.selectedDistanceKey) state.selectedDistanceKey = cfg.distances[0]?.key ?? null;
   renderH2HForm(cfg, state.standings);
 
   if (state.selectedView === "distance") {
-    const dist = cfg.distances.find(d => d.key === state.selectedDistanceKey) ?? cfg.distances[0];
-    return renderDistanceView(dist, state.standings);
+    const d = cfg.distances.find(x => x.key === state.selectedDistanceKey) ?? cfg.distances[0];
+    return renderDistanceView(d, state.standings);
   }
-  if (state.selectedView === "headToHead") {
-    return renderHeadToHeadView(cfg.distances, state.standings);
-  }
+  if (state.selectedView === "headToHead") return renderHeadToHeadView(cfg.distances, state.standings);
   return renderStandingsView(cfg.distances, state.standings);
 }
 
+function loadAndRender() { loadData(); render(); }
+
 function boot() {
-  cacheElements();
-  bindHeaderEvents();
-  bindH2HEvents();
-  bindExportEvent();
-  loadDataAndCompute();
-  render();
+  cacheEls();
+  bindEvents();
+  loadAndRender();
 }
 
-// Wait for DOM if needed
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
-} else {
-  boot();
-}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+else boot();

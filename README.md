@@ -1,44 +1,44 @@
 # NK Sprint & NK Allround — Klassement Tool
 
-Een tool die automatisch een klassement berekent op basis van schaats-tijden, bedoeld voor NK Sprint en NK Allround.
+Een professionele tool die automatisch een klassement berekent op basis van schaats-tijden, bedoeld voor NK Sprint en NK Allround.
 
 ## Features
 
-- **NK Sprint / NK Allround** moduleselectie
-- **Mannen / Vrouwen** omschakelen
-- **Afstandsweergave** — resultaten per individuele afstand met delta t.o.v. snelste
-- **Klassement** — totaaloverzicht met punten per afstand, totaalscore, en delta t.o.v. leider
-- **Head-to-Head** — volledig vergelijkingstabel van twee rijders + berekening van de benodigde tijd om boven een target te komen
-- **CSV-export** — exporteer het huidige klassement als CSV-bestand
-- **Podium-indicatoren** — visuele goud/zilver/brons markering op top-3 posities
+- **NK Sprint / NK Allround** module-selectie met visuele indicator
+- **Mannen / Vrouwen** categorie-omschakeling
+- **Afstandsweergave** — resultaten per individuele afstand met delta t.o.v. snelste tijd
+- **Klassement** — totaaloverzicht met punten, totaalscore en delta t.o.v. de leider
+- **Head-to-Head** — volledige vergelijkingstabel + berekening van de benodigde tijd om een target te verslaan
+- **CSV-export** — exporteer het huidige klassement (Excel-compatible, UTF-8 BOM)
+- **Podium-indicatoren** — goud / zilver / brons markering op top-3
 
 ## Puntberekening
 
-- Punten per afstand = `tijd_in_seconden / (afstand / 500)`
+```
+punten = tijd_in_seconden ÷ (afstand ÷ 500)
+```
+
 - Punten worden **afgekapt** op 3 decimalen (niet afgerond)
 - Laagste totaalscore = eerste in het klassement
 
 ## Head-to-Head
 
-De H2H-berekening toont:
-1. Een volledige vergelijkingstabel met tijden en punten per afstand voor beide rijders
-2. De maximaal toegestane tijd op een gekozen focusafstand om strikt beter te zijn dan een target (met 0.001 punt marge)
+1. Volledige vergelijkingstabel: tijden + punten per afstand voor beide rijders, met win/loss markering
+2. Target-berekening: de maximaal toegestane tijd op een focusafstand om strikt beter te zijn dan een target (0.001 punt marge)
 
 ## KNSB Live Results (toekomstig)
 
-In `app.js` staat een stub `fetchKnsbResults()` en een verwacht datamodel:
+In `app.js` staat een stub `fetchKnsbResults()` met het verwachte datamodel:
 
 ```js
-resultsRaw = {
-  athletes: [
-    {
-      athleteId: string,
-      name: string,
-      times: { [distanceKey]: "1:09.86" },
-      status: { [distanceKey]: "OK" | "DNS" | "DNF" | "DQ" },
-      meta: { club: string }
-    }
-  ]
+{
+  athletes: [{
+    athleteId: string,
+    name: string,
+    times: { [distanceKey]: "1:09.86" },
+    status: { [distanceKey]: "OK" | "DNS" | "DNF" | "DQ" },
+    meta: { club: string }
+  }]
 }
 ```
 
