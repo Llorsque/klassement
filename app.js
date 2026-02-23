@@ -69,7 +69,7 @@ const state = {
     riderAId: null,
     riderBId: null,
     focusDistanceKey: null,
-    targetRank: 2,             // target position to beat
+    targetRiderId: null,         // target skater to beat
   },
 };
 
@@ -244,7 +244,7 @@ function computeMaxTimeForTarget(athlete, distances, focusDist, targetTotal) {
 const el = {};
 function cacheEls() {
   ["moduleTabs","genderTabs","viewButtons","viewTitle","viewMeta","contentArea",
-   "h2hRiderA","h2hRiderB","h2hFocusDistance","h2hTargetRank","h2hOpen",
+   "h2hRiderA","h2hRiderB","h2hFocusDistance","h2hTargetRider","h2hOpen",
    "exportBtn","toast"
   ].forEach(id => { el[id] = document.getElementById(id); });
 }
@@ -329,11 +329,12 @@ function renderH2HForm(cfg, standings) {
   if (!state.h2h.riderAId) state.h2h.riderAId = ath[0]?.value ?? null;
   if (!state.h2h.riderBId) state.h2h.riderBId = ath[1]?.value ?? ath[0]?.value ?? null;
   if (!state.h2h.focusDistanceKey) state.h2h.focusDistanceKey = dis[dis.length - 1]?.value ?? null;
+  if (!state.h2h.targetRiderId) state.h2h.targetRiderId = ath[0]?.value ?? null;
 
   fillSelect(el.h2hRiderA, ath, state.h2h.riderAId);
   fillSelect(el.h2hRiderB, ath, state.h2h.riderBId);
   fillSelect(el.h2hFocusDistance, dis, state.h2h.focusDistanceKey);
-  if (el.h2hTargetRank) el.h2hTargetRank.value = String(state.h2h.targetRank || 2);
+  fillSelect(el.h2hTargetRider, ath, state.h2h.targetRiderId);
 }
 
 // ── Render: Distance View ──────────────────────────────
@@ -464,7 +465,6 @@ function renderHeadToHeadView(distances, standings) {
   const rA = standings.all.find(x => x.athleteId === h2h.riderAId);
   const rB = standings.all.find(x => x.athleteId === h2h.riderBId);
   const focusDist = distances.find(d => d.key === h2h.focusDistanceKey) ?? distances[distances.length - 1];
-  const targetRank = Math.max(1, h2h.targetRank || 2);
 
   let html = "";
 
@@ -548,43 +548,60 @@ function renderHeadToHeadView(distances, standings) {
     </div>`;
   }
 
-  // ── 2) Target time calculations for Rider A ─────────
-  if (rA && focusDist) {
+  // ── 2) Target time calculations — side by side for both riders ──
+  if (rA && rB && focusDist) {
     const leader = standings.full[0] ?? null;
-    const targetAthlete = standings.full[targetRank - 1] ?? null;
+    const targetAthlete = standings.all.find(x => x.athleteId === h2h.targetRiderId) ?? null;
 
-    // Time to become leader (beat #1)
-    const timeForLeader = leader
-      ? computeMaxTimeForTarget(rA, distances, focusDist, leader.totalPoints)
-      : null;
+    // Helper: build the two stacked KPI cards for one rider
+    function buildRiderKPIs(rider) {
+      if (!rider) return "";
 
-    // Time to beat target position
-    const timeForTarget = targetAthlete
-      ? computeMaxTimeForTarget(rA, distances, focusDist, targetAthlete.totalPoints)
-      : null;
+      // Time to beat the leader
+      const alreadyLeader = rider.rank === 1;
+      const timeForLeader = (!alreadyLeader && leader)
+        ? computeMaxTimeForTarget(rider, distances, focusDist, leader.totalPoints)
+        : null;
 
-    // Is rider A already at or above these positions?
-    const alreadyLeader = rA.rank === 1;
-    const alreadyAboveTarget = rA.rank != null && rA.rank <= targetRank;
+      // Time to beat the target rider
+      const isTarget = rider.athleteId === targetAthlete?.athleteId;
+      const alreadyBetter = targetAthlete && rider.rank != null && targetAthlete.rank != null && rider.rank < targetAthlete.rank;
+      const timeForTarget = (!isTarget && !alreadyBetter && targetAthlete)
+        ? computeMaxTimeForTarget(rider, distances, focusDist, targetAthlete.totalPoints)
+        : null;
+
+      const leaderCard = `
+        <div class="kpi-card kpi-card--gold">
+          <div class="kpi-card__label">Tijd om ${leader ? esc(leader.name) : "leider"} te verslaan</div>
+          <div class="kpi-card__value">${alreadyLeader ? "Is leider" : (timeForLeader != null ? fmtTime(timeForLeader) : "—")}</div>
+          <div class="kpi-card__sub">${alreadyLeader ? `Staat op #1 met ${fmtPts(rider.totalPoints)} pnt` : (leader ? `#1 · ${fmtPts(leader.totalPoints)} pnt` : "")}</div>
+        </div>`;
+
+      let targetCard = "";
+      if (targetAthlete) {
+        targetCard = `
+          <div class="kpi-card kpi-card--accent">
+            <div class="kpi-card__label">Tijd om ${esc(targetAthlete.name)} te verslaan</div>
+            <div class="kpi-card__value">${isTarget ? "Is zelf target" : (alreadyBetter ? `Staat al #${rider.rank}` : (timeForTarget != null ? fmtTime(timeForTarget) : "—"))}</div>
+            <div class="kpi-card__sub">${isTarget ? "" : (alreadyBetter ? `Al beter dan #${targetAthlete.rank}` : `#${targetAthlete.rank ?? "—"} · ${fmtPts(targetAthlete.totalPoints)} pnt`)}</div>
+          </div>`;
+      }
+
+      return leaderCard + targetCard;
+    }
 
     html += `
-    <div class="section-label" style="margin-top:24px">Benodigde tijd voor ${esc(rA.name)} op ${esc(focusDist.label)}</div>
-    <div class="kpi-row">
-      <div class="kpi-card kpi-card--gold">
-        <div class="kpi-card__label">Tijd om leider te worden</div>
-        <div class="kpi-card__value">${alreadyLeader ? "Is leider" : (timeForLeader != null ? fmtTime(timeForLeader) : "—")}</div>
-        <div class="kpi-card__sub">${alreadyLeader ? `Staat al op #1 met ${fmtPts(rA.totalPoints)} pnt` : (leader ? `Target: ${esc(leader.name)} (${fmtPts(leader.totalPoints)} pnt)` : "")}</div>
+    <div class="section-label" style="margin-top:24px">Benodigde tijd op ${esc(focusDist.label)}</div>
+    <div class="h2h-kpi-columns">
+      <div class="h2h-kpi-col">
+        <div class="h2h-kpi-col__name">${esc(rA.name)} <span class="h2h-kpi-col__rank">#${rA.rank ?? "—"}</span></div>
+        ${buildRiderKPIs(rA)}
       </div>
-      <div class="kpi-card kpi-card--accent">
-        <div class="kpi-card__label">Tijd om positie ${targetRank} te verslaan</div>
-        <div class="kpi-card__value">${alreadyAboveTarget ? `Staat al #${rA.rank}` : (timeForTarget != null ? fmtTime(timeForTarget) : "—")}</div>
-        <div class="kpi-card__sub">${alreadyAboveTarget ? `Al beter dan #${targetRank}` : (targetAthlete ? `Target: ${esc(targetAthlete.name)} (${fmtPts(targetAthlete.totalPoints)} pnt)` : `Positie ${targetRank} bestaat niet`)}</div>
+      <div class="h2h-kpi-col">
+        <div class="h2h-kpi-col__name">${esc(rB.name)} <span class="h2h-kpi-col__rank">#${rB.rank ?? "—"}</span></div>
+        ${buildRiderKPIs(rB)}
       </div>
     </div>`;
-
-    if (!alreadyLeader && timeForLeader == null && leader && rA.rank !== 1) {
-      html += `<div class="info-box info-box--error"><strong>Let op:</strong> ${esc(rA.name)} kan de leider niet meer inhalen op ${esc(focusDist.label)} alleen, of mist tijden op andere afstanden.</div>`;
-    }
   }
 
   if (!html) {
@@ -649,11 +666,7 @@ function bindEvents() {
   el.h2hRiderA?.addEventListener("change", () => { state.h2h.riderAId = el.h2hRiderA.value || null; render(); });
   el.h2hRiderB?.addEventListener("change", () => { state.h2h.riderBId = el.h2hRiderB.value || null; render(); });
   el.h2hFocusDistance?.addEventListener("change", () => { state.h2h.focusDistanceKey = el.h2hFocusDistance.value || null; render(); });
-  el.h2hTargetRank?.addEventListener("input", () => {
-    const v = Number(el.h2hTargetRank.value);
-    state.h2h.targetRank = (Number.isFinite(v) && v >= 1) ? Math.floor(v) : 1;
-    render();
-  });
+  el.h2hTargetRider?.addEventListener("change", () => { state.h2h.targetRiderId = el.h2hTargetRider.value || null; render(); });
   el.h2hOpen?.addEventListener("click", e => { e.preventDefault(); state.selectedView = "headToHead"; render(); });
   el.exportBtn?.addEventListener("click", exportCSV);
 }
@@ -664,6 +677,7 @@ function resetViewState() {
   state.nextDistKey = null;
   state.h2h.riderAId = null;
   state.h2h.riderBId = null;
+  state.h2h.targetRiderId = null;
   const cfg = getActiveConfig();
   state.h2h.focusDistanceKey = cfg.distances[cfg.distances.length - 1]?.key ?? null;
 }

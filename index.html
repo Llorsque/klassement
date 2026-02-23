@@ -65,7 +65,7 @@
       <!-- Head-to-Head controls -->
       <section class="panel__block">
         <div class="panel__label">Head-to-Head</div>
-        <p class="panel__desc">Selecteer twee rijders, een focusafstand en een target positie.</p>
+        <p class="panel__desc">Selecteer twee rijders, een focusafstand en een target rijder.</p>
 
         <div class="form-stack" id="h2hForm">
           <label class="input-group">
@@ -86,8 +86,8 @@
           </label>
 
           <label class="input-group">
-            <span class="input-group__label">Target positie</span>
-            <input id="h2hTargetRank" type="number" min="1" value="2" />
+            <span class="input-group__label">Target rijder</span>
+            <div class="select-wrap"><select id="h2hTargetRider"></select></div>
           </label>
 
           <button class="cta" id="h2hOpen" type="button">

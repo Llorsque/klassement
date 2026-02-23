@@ -228,6 +228,32 @@ code {
 .kpi-card--accent .kpi-card__value { color: var(--accent); }
 .kpi-card__sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-weight: 500; }
 
+/* ── H2H Side-by-side KPI Columns ───────────────────── */
+.h2h-kpi-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.h2h-kpi-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.h2h-kpi-col__name {
+  font-weight: 800;
+  font-size: 14px;
+  color: #fff;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+.h2h-kpi-col__rank {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: 4px;
+}
+
 /* ── Mirror Table (H2H) ────────────────────────────── */
 .mirror-wrap {
   border: 1px solid var(--border);
@@ -371,6 +397,7 @@ code {
   .stage__header { padding: 20px; }
   .stage__body { padding: 16px; }
   .kpi-row { grid-template-columns: 1fr; }
+  .h2h-kpi-columns { grid-template-columns: 1fr; }
   .panel__block { min-width: 100%; }
   .mirror-header__rider { padding: 12px 14px; font-size: 13px; }
   .mirror-cell { padding: 9px 14px; font-size: 12px; }
