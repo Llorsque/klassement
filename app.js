@@ -131,8 +131,197 @@ const ICON = {
   versus: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M4 12V6M8 12V4M12 12V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
 };
 
-// ── Data: KNSB stub ────────────────────────────────────
-async function fetchKnsbResults() { return null; }
+// ── Live Data: KNSB URL Mapping ────────────────────────
+// Maps each module + gender + distance key to a KNSB live results URL.
+// The competition IDs map to:
+//   NK Sprint Vrouwen: 1 (1e500), 3 (1e1000), 5 (2e500), 7 (2e1000)
+//   NK Sprint Mannen:  2 (1e500), 4 (1e1000), 6 (2e500), 8 (2e1000)
+const LIVE_URLS = {
+  sprint: {
+    v: {
+      d1_500:  { compId: 1, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/1/results" },
+      d1_1000: { compId: 3, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/3/results" },
+      d2_500:  { compId: 5, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/5/results" },
+      d2_1000: { compId: 7, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/7/results" },
+    },
+    m: {
+      d1_500:  { compId: 2, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/2/results" },
+      d1_1000: { compId: 4, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/4/results" },
+      d2_500:  { compId: 6, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/6/results" },
+      d2_1000: { compId: 8, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/8/results" },
+    },
+  },
+  // NK Allround: no live URLs yet — will use mock data
+  allround: { m: {}, v: {} },
+};
+
+const EVENT_ID = "2026_NED_0003";
+const API_BASE = "https://liveresults.schaatsen.nl";
+
+// ── Live Data: State ───────────────────────────────────
+let dataSource = "mock"; // "live" | "mock"
+let pollTimer = null;
+const POLL_INTERVAL = 30_000; // 30 seconds
+let lastFetchLog = [];
+
+// ── Live Data: Fetch single competition results ────────
+// The KNSB site is a SPA. We try multiple API patterns to find the data.
+async function fetchCompetitionResults(compId) {
+  const apiPatterns = [
+    `${API_BASE}/api/events/${EVENT_ID}/competition/${compId}/results`,
+    `${API_BASE}/api/events/${EVENT_ID}/competitions/${compId}`,
+    `${API_BASE}/api/v1/events/${EVENT_ID}/competition/${compId}/results`,
+    `${API_BASE}/api/v1/events/${EVENT_ID}/competitions/${compId}`,
+    `${API_BASE}/events/${EVENT_ID}/competition/${compId}/results.json`,
+  ];
+
+  for (const url of apiPatterns) {
+    try {
+      const resp = await fetch(url, {
+        headers: { "Accept": "application/json" },
+        mode: "cors",
+      });
+      if (!resp.ok) continue;
+      const ct = resp.headers.get("content-type") ?? "";
+      if (!ct.includes("json")) continue;
+      const data = await resp.json();
+      lastFetchLog.push({ compId, url, status: "ok" });
+      return data;
+    } catch (_) { /* try next */ }
+  }
+
+  // Fallback: try fetching the HTML page itself with Accept: json
+  try {
+    const htmlUrl = `${API_BASE}/events/${EVENT_ID}/competition/${compId}/results`;
+    const resp = await fetch(htmlUrl, {
+      headers: { "Accept": "application/json, text/html" },
+      mode: "cors",
+    });
+    if (resp.ok) {
+      const ct = resp.headers.get("content-type") ?? "";
+      if (ct.includes("json")) {
+        const data = await resp.json();
+        lastFetchLog.push({ compId, url: htmlUrl, status: "ok (html endpoint)" });
+        return data;
+      }
+      // Try to find embedded JSON state in HTML (many SPAs embed initial state)
+      const html = await resp.text();
+      const stateMatch = html.match(/__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/)
+        || html.match(/window\.__DATA__\s*=\s*(\{[\s\S]*?\});/)
+        || html.match(/<script[^>]*>.*?("results"|"competitors")[\s\S]*?<\/script>/);
+      if (stateMatch?.[1]) {
+        try {
+          const data = JSON.parse(stateMatch[1]);
+          lastFetchLog.push({ compId, url: htmlUrl, status: "ok (embedded state)" });
+          return data;
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+
+  lastFetchLog.push({ compId, status: "failed" });
+  return null;
+}
+
+// ── Live Data: Parse KNSB response ─────────────────────
+// Attempts to normalize various possible JSON structures into our format.
+// Returns array of { name, time, status } or null.
+function parseKnsbResponse(data) {
+  if (!data) return null;
+
+  // Pattern 1: { results: [ { name/skater, time/result, ... } ] }
+  let results = data.results ?? data.Results ?? data.competitors ?? data.Competitors
+    ?? data.data?.results ?? data.data?.competitors ?? null;
+
+  // Pattern 2: data is the array itself
+  if (Array.isArray(data)) results = data;
+
+  // Pattern 3: wrapped in competition object
+  if (!results && data.competition) {
+    results = data.competition.results ?? data.competition.competitors;
+  }
+
+  if (!Array.isArray(results) || results.length === 0) return null;
+
+  return results.map((r, idx) => {
+    // Try various field names
+    const name = r.name ?? r.Name ?? r.skaterName ?? r.skater?.name
+      ?? r.fullName ?? r.FullName ?? r.displayName ?? `Skater ${idx + 1}`;
+
+    const time = r.time ?? r.Time ?? r.result ?? r.Result ?? r.finishTime
+      ?? r.finish ?? r.Finish ?? r.raceTime ?? null;
+
+    const statusRaw = r.status ?? r.Status ?? r.raceStatus ?? "OK";
+    let status = "OK";
+    if (typeof statusRaw === "string") {
+      const s = statusRaw.toUpperCase();
+      if (s.includes("DNS")) status = "DNS";
+      else if (s.includes("DNF")) status = "DNF";
+      else if (s.includes("DQ") || s.includes("DSQ")) status = "DQ";
+    }
+    if (!time && status === "OK") status = "DNS";
+
+    const skaterId = r.id ?? r.Id ?? r.skaterId ?? r.skater?.id ?? r.participantId ?? `live_${idx}`;
+
+    return { skaterId: String(skaterId), name: String(name), time: time ? String(time) : null, status };
+  });
+}
+
+// ── Live Data: Fetch all distances for a module+gender ─
+async function fetchLiveResults(moduleKey, genderKey) {
+  const urlMap = LIVE_URLS[moduleKey]?.[genderKey];
+  if (!urlMap || Object.keys(urlMap).length === 0) return null;
+
+  const cfg = MODULE_CONFIG[moduleKey].genders[genderKey];
+  lastFetchLog = [];
+  let anySuccess = false;
+
+  // Fetch all competition results in parallel
+  const fetches = cfg.distances.map(async (dist) => {
+    const entry = urlMap[dist.key];
+    if (!entry) return { key: dist.key, results: null };
+    const data = await fetchCompetitionResults(entry.compId);
+    const parsed = parseKnsbResponse(data);
+    if (parsed) anySuccess = true;
+    return { key: dist.key, results: parsed };
+  });
+
+  const allResults = await Promise.all(fetches);
+  if (!anySuccess) return null;
+
+  // Merge: build athlete map across all distances
+  const athleteMap = new Map(); // keyed by name (normalized)
+  const normalize = (n) => n.trim().toLowerCase();
+
+  for (const { key, results } of allResults) {
+    if (!results) continue;
+    for (const r of results) {
+      const nk = normalize(r.name);
+      if (!athleteMap.has(nk)) {
+        athleteMap.set(nk, {
+          athleteId: r.skaterId,
+          name: r.name,
+          meta: { club: "—" },
+          times: {},
+          status: {},
+        });
+      }
+      const athlete = athleteMap.get(nk);
+      athlete.times[key] = r.time;
+      athlete.status[key] = r.status;
+    }
+  }
+
+  // Fill missing distances as DNS
+  for (const [, ath] of athleteMap) {
+    for (const d of cfg.distances) {
+      if (!ath.times[d.key]) ath.times[d.key] = null;
+      if (!ath.status[d.key]) ath.status[d.key] = "DNS";
+    }
+  }
+
+  return { athletes: [...athleteMap.values()] };
+}
 
 // ── Mock Data ──────────────────────────────────────────
 function makeMockResults(moduleKey, genderKey) {
@@ -158,6 +347,62 @@ function makeMockResults(moduleKey, genderKey) {
       return { athleteId: `a${idx+1}`, name, meta:{ club:"—" }, times, status };
     }),
   };
+}
+
+// ── Data Loading ───────────────────────────────────────
+async function loadData() {
+  const m = state.selectedModule;
+  const g = state.selectedGender;
+
+  // Try live first
+  const liveData = await fetchLiveResults(m, g);
+  if (liveData && liveData.athletes.length > 0) {
+    state.resultsRaw = liveData;
+    dataSource = "live";
+    console.log("[Klassement] Live data loaded", lastFetchLog);
+  } else {
+    // Fallback to mock
+    state.resultsRaw = makeMockResults(m, g);
+    dataSource = "mock";
+    if (lastFetchLog.length > 0) {
+      console.log("[Klassement] Live fetch attempted but failed, using mock data", lastFetchLog);
+    }
+  }
+  state.standings = computeStandings(state.resultsRaw, getActiveConfig().distances);
+  updateStatusBadge();
+}
+
+function updateStatusBadge() {
+  const badge = document.getElementById("dataStatus");
+  if (!badge) return;
+  if (dataSource === "live") {
+    badge.innerHTML = '<span class="status-badge__pulse status-badge__pulse--live"></span>Live';
+    badge.classList.add("status-badge--live");
+    badge.classList.remove("status-badge--mock");
+  } else {
+    badge.innerHTML = '<span class="status-badge__pulse"></span>Mockdata';
+    badge.classList.remove("status-badge--live");
+    badge.classList.add("status-badge--mock");
+  }
+}
+
+// ── Auto-Polling ───────────────────────────────────────
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    await loadData();
+    render();
+    if (dataSource === "live") {
+      showToast("Data bijgewerkt");
+    }
+  }, POLL_INTERVAL);
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 }
 
 // ── Computation ────────────────────────────────────────
@@ -447,6 +692,7 @@ function renderStandingsView(distances, standings) {
       <strong>Leeswijzer:</strong> De tijden zijn de werkelijke wedstrijdtijden.
       Punten = tijd ÷ (meters ÷ 500), afgekapt op 3 decimalen. Laagste totaal = leider.
       Achterstand toont hoeveel seconden je sneller moet rijden op de gekozen afstand om de leider in te halen.
+      ${dataSource === "live" ? "<br><strong>Databron:</strong> liveresults.schaatsen.nl — automatisch bijgewerkt elke 30 sec." : "<br><strong>Databron:</strong> Mockdata (geen live verbinding beschikbaar)."}
     </div>`;
 
   // Bind inline distance picker
@@ -647,20 +893,20 @@ function showToast(msg) {
 
 // ── Events ─────────────────────────────────────────────
 function bindEvents() {
-  el.moduleTabs?.addEventListener("click", e => {
+  el.moduleTabs?.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-module]");
     if (!btn || btn.dataset.module === state.selectedModule) return;
     state.selectedModule = btn.dataset.module;
     resetViewState();
-    loadAndRender();
+    await loadAndRender();
   });
 
-  el.genderTabs?.addEventListener("click", e => {
+  el.genderTabs?.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-gender]");
     if (!btn || btn.dataset.gender === state.selectedGender) return;
     state.selectedGender = btn.dataset.gender;
     resetViewState();
-    loadAndRender();
+    await loadAndRender();
   });
 
   el.h2hRiderA?.addEventListener("change", () => { state.h2h.riderAId = el.h2hRiderA.value || null; render(); });
@@ -683,10 +929,7 @@ function resetViewState() {
 }
 
 // ── Main ───────────────────────────────────────────────
-function loadData() {
-  state.resultsRaw = makeMockResults(state.selectedModule, state.selectedGender);
-  state.standings = computeStandings(state.resultsRaw, getActiveConfig().distances);
-}
+// loadData is now defined above in the Live Data section (async)
 
 function render() {
   const cfg = getActiveConfig();
@@ -707,13 +950,17 @@ function render() {
   return renderStandingsView(cfg.distances, state.standings);
 }
 
-function loadAndRender() { loadData(); render(); }
-
-function boot() {
-  cacheEls();
-  bindEvents();
-  loadAndRender();
+async function loadAndRender() {
+  await loadData();
+  render();
+  startPolling();
 }
 
-if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+async function boot() {
+  cacheEls();
+  bindEvents();
+  await loadAndRender();
+}
+
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => boot());
 else boot();
