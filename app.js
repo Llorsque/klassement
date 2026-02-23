@@ -190,7 +190,26 @@ function computeStandings(resultsRaw, distances) {
   const leader = full[0]?.totalPoints ?? null;
   for (const a of full) a.pointsDelta = Number.isFinite(leader) ? truncateDecimals(a.totalPoints - leader, 3) : null;
   for (const a of partial) a.pointsDelta = null;
-  return { all:[...full, ...partial], full, partial };
+
+  const all = [...full, ...partial];
+
+  // Compute per-distance rankings (sorted by time, fastest = 1)
+  const distRanks = {};
+  for (const d of distances) {
+    const withTimes = all
+      .filter(a => Number.isFinite(a.seconds?.[d.key]))
+      .sort((a, b) => a.seconds[d.key] - b.seconds[d.key]);
+    withTimes.forEach((a, i) => {
+      if (!distRanks[a.athleteId]) distRanks[a.athleteId] = {};
+      distRanks[a.athleteId][d.key] = i + 1;
+    });
+  }
+  // Attach to each athlete
+  for (const a of all) {
+    a.distRanks = distRanks[a.athleteId] ?? {};
+  }
+
+  return { all, full, partial };
 }
 
 /**
@@ -253,6 +272,14 @@ function stHtml(s) {
 }
 
 function podCls(r) { return r >= 1 && r <= 3 ? `podium-${r}` : ""; }
+
+function distRankHtml(pos) {
+  if (!Number.isFinite(pos)) return "";
+  if (pos === 1) return ' <span class="dist-medal dist-medal--gold">🥇</span>';
+  if (pos === 2) return ' <span class="dist-medal dist-medal--silver">🥈</span>';
+  if (pos === 3) return ' <span class="dist-medal dist-medal--bronze">🥉</span>';
+  return ` <span class="dist-pos">(${pos})</span>`;
+}
 
 // ── Render: Meta ───────────────────────────────────────
 function renderMeta(cfg) {
@@ -376,10 +403,12 @@ function renderStandingsView(distances, standings) {
   const hdr = distances.map(d => `<th>${esc(d.label)}</th>`).join("");
 
   const body = standings.all.map(a => {
-    // Show actual race times (not points)
+    // Show actual race times + position on that distance
     const cells = distances.map(d => {
       const t = a.times?.[d.key];
-      return `<td class="mono">${t ? esc(t) : "—"}</td>`;
+      const pos = a.distRanks?.[d.key];
+      if (!t) return `<td class="mono">—</td>`;
+      return `<td class="mono">${esc(t)}${distRankHtml(pos)}</td>`;
     }).join("");
 
     // Delta: convert points deficit → time on the selected next distance

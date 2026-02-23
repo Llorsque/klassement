@@ -195,6 +195,21 @@ code {
 .table tr.podium-3 td:first-child { box-shadow: inset 3px 0 0 var(--bronze); }
 
 .athlete-name { font-weight: 600; color: #fff; }
+
+/* Distance position indicator (behind time in klassement) */
+.dist-medal {
+  font-size: 13px;
+  vertical-align: baseline;
+  margin-left: 2px;
+}
+.dist-pos {
+  font-family: "DM Sans", system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  margin-left: 3px;
+  vertical-align: baseline;
+}
 .delta { font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 500; color: var(--text-dim); padding: 2px 6px; border-radius: 4px; }
 .delta--leader { background: var(--positive-dim); color: var(--positive); font-weight: 700; }
 .st { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
