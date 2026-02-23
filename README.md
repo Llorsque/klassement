@@ -14,23 +14,45 @@ Professionele tool die automatisch een klassement berekent op basis van schaats-
 
 ## Live Data Bronnen
 
-### NK Sprint Vrouwen
-| Afstand  | Comp ID | URL |
-|----------|---------|-----|
-| 1e 500m  | 1       | `competition/1/results` |
-| 1e 1000m | 3       | `competition/3/results` |
-| 2e 500m  | 5       | `competition/5/results` |
-| 2e 1000m | 7       | `competition/7/results` |
+### NK Sprint (event `2026_NED_0003`)
 
-### NK Sprint Mannen
-| Afstand  | Comp ID | URL |
-|----------|---------|-----|
-| 1e 500m  | 2       | `competition/2/results` |
-| 1e 1000m | 4       | `competition/4/results` |
-| 2e 500m  | 6       | `competition/6/results` |
-| 2e 1000m | 8       | `competition/8/results` |
+**Vrouwen:**
+| Afstand  | Comp ID |
+|----------|---------|
+| 1e 500m  | 1       |
+| 1e 1000m | 3       |
+| 2e 500m  | 5       |
+| 2e 1000m | 7       |
 
-Basis-URL: `https://liveresults.schaatsen.nl/events/2026_NED_0003/`
+**Mannen:**
+| Afstand  | Comp ID |
+|----------|---------|
+| 1e 500m  | 2       |
+| 1e 1000m | 4       |
+| 2e 500m  | 6       |
+| 2e 1000m | 8       |
+
+### NK Allround (event `2026_NED_0004`)
+
+**Vrouwen:**
+| Afstand | Comp ID |
+|---------|---------|
+| 500m    | 1       |
+| 3000m   | 3       |
+| 1500m   | 5       |
+| 5000m   | 7       |
+
+**Mannen:**
+| Afstand  | Comp ID |
+|----------|---------|
+| 500m     | 2       |
+| 5000m    | 4       |
+| 1500m    | 6       |
+| 10.000m  | 8       |
+
+Basis-URLs:
+- Sprint: `https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/{id}/results`
+- Allround: `https://liveresults.schaatsen.nl/events/2026_NED_0004/competition/{id}/results`
 
 ## Auto-polling
 

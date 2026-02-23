@@ -133,29 +133,41 @@ const ICON = {
 
 // ── Live Data: KNSB URL Mapping ────────────────────────
 // Maps each module + gender + distance key to a KNSB live results URL.
-// The competition IDs map to:
-//   NK Sprint Vrouwen: 1 (1e500), 3 (1e1000), 5 (2e500), 7 (2e1000)
-//   NK Sprint Mannen:  2 (1e500), 4 (1e1000), 6 (2e500), 8 (2e1000)
+// NK Sprint  = event 2026_NED_0003
+// NK Allround = event 2026_NED_0004
 const LIVE_URLS = {
   sprint: {
+    eventId: "2026_NED_0003",
     v: {
-      d1_500:  { compId: 1, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/1/results" },
-      d1_1000: { compId: 3, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/3/results" },
-      d2_500:  { compId: 5, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/5/results" },
-      d2_1000: { compId: 7, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/7/results" },
+      d1_500:  { compId: 1 },
+      d1_1000: { compId: 3 },
+      d2_500:  { compId: 5 },
+      d2_1000: { compId: 7 },
     },
     m: {
-      d1_500:  { compId: 2, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/2/results" },
-      d1_1000: { compId: 4, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/4/results" },
-      d2_500:  { compId: 6, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/6/results" },
-      d2_1000: { compId: 8, url: "https://liveresults.schaatsen.nl/events/2026_NED_0003/competition/8/results" },
+      d1_500:  { compId: 2 },
+      d1_1000: { compId: 4 },
+      d2_500:  { compId: 6 },
+      d2_1000: { compId: 8 },
     },
   },
-  // NK Allround: no live URLs yet — will use mock data
-  allround: { m: {}, v: {} },
+  allround: {
+    eventId: "2026_NED_0004",
+    v: {
+      d1_500:  { compId: 1 },
+      d1_3000: { compId: 3 },
+      d1_1500: { compId: 5 },
+      d1_5000: { compId: 7 },
+    },
+    m: {
+      d1_500:   { compId: 2 },
+      d1_5000:  { compId: 4 },
+      d1_1500:  { compId: 6 },
+      d1_10000: { compId: 8 },
+    },
+  },
 };
 
-const EVENT_ID = "2026_NED_0003";
 const API_BASE = "https://liveresults.schaatsen.nl";
 
 // ── Live Data: State ───────────────────────────────────
@@ -166,13 +178,13 @@ let lastFetchLog = [];
 
 // ── Live Data: Fetch single competition results ────────
 // The KNSB site is a SPA. We try multiple API patterns to find the data.
-async function fetchCompetitionResults(compId) {
+async function fetchCompetitionResults(eventId, compId) {
   const apiPatterns = [
-    `${API_BASE}/api/events/${EVENT_ID}/competition/${compId}/results`,
-    `${API_BASE}/api/events/${EVENT_ID}/competitions/${compId}`,
-    `${API_BASE}/api/v1/events/${EVENT_ID}/competition/${compId}/results`,
-    `${API_BASE}/api/v1/events/${EVENT_ID}/competitions/${compId}`,
-    `${API_BASE}/events/${EVENT_ID}/competition/${compId}/results.json`,
+    `${API_BASE}/api/events/${eventId}/competition/${compId}/results`,
+    `${API_BASE}/api/events/${eventId}/competitions/${compId}`,
+    `${API_BASE}/api/v1/events/${eventId}/competition/${compId}/results`,
+    `${API_BASE}/api/v1/events/${eventId}/competitions/${compId}`,
+    `${API_BASE}/events/${eventId}/competition/${compId}/results.json`,
   ];
 
   for (const url of apiPatterns) {
@@ -185,14 +197,14 @@ async function fetchCompetitionResults(compId) {
       const ct = resp.headers.get("content-type") ?? "";
       if (!ct.includes("json")) continue;
       const data = await resp.json();
-      lastFetchLog.push({ compId, url, status: "ok" });
+      lastFetchLog.push({ eventId, compId, url, status: "ok" });
       return data;
     } catch (_) { /* try next */ }
   }
 
   // Fallback: try fetching the HTML page itself with Accept: json
   try {
-    const htmlUrl = `${API_BASE}/events/${EVENT_ID}/competition/${compId}/results`;
+    const htmlUrl = `${API_BASE}/events/${eventId}/competition/${compId}/results`;
     const resp = await fetch(htmlUrl, {
       headers: { "Accept": "application/json, text/html" },
       mode: "cors",
@@ -269,8 +281,10 @@ function parseKnsbResponse(data) {
 
 // ── Live Data: Fetch all distances for a module+gender ─
 async function fetchLiveResults(moduleKey, genderKey) {
-  const urlMap = LIVE_URLS[moduleKey]?.[genderKey];
-  if (!urlMap || Object.keys(urlMap).length === 0) return null;
+  const moduleUrls = LIVE_URLS[moduleKey];
+  const eventId = moduleUrls?.eventId;
+  const urlMap = moduleUrls?.[genderKey];
+  if (!eventId || !urlMap || Object.keys(urlMap).length === 0) return null;
 
   const cfg = MODULE_CONFIG[moduleKey].genders[genderKey];
   lastFetchLog = [];
@@ -280,7 +294,7 @@ async function fetchLiveResults(moduleKey, genderKey) {
   const fetches = cfg.distances.map(async (dist) => {
     const entry = urlMap[dist.key];
     if (!entry) return { key: dist.key, results: null };
-    const data = await fetchCompetitionResults(entry.compId);
+    const data = await fetchCompetitionResults(eventId, entry.compId);
     const parsed = parseKnsbResponse(data);
     if (parsed) anySuccess = true;
     return { key: dist.key, results: parsed };
