@@ -2,9 +2,8 @@
    KLASSEMENT — NK Sprint & NK Allround
    ─────────────────────────────────────────────────────
    Puntberekening : seconden per 500m, 3 decimalen AFKAPPEN
-   Head-to-Head   : benodigde tijd om boven target te komen
+   Head-to-Head   : spiegel-vergelijking + target-tijden
    ═══════════════════════════════════════════════════════ */
-
 "use strict";
 
 // ── Configuration ──────────────────────────────────────
@@ -62,16 +61,15 @@ const state = {
   selectedModule: "sprint",
   selectedGender: "m",
   selectedView: "klassement",
-  selectedDistanceKey: null,
+  selectedDistanceKey: null,   // for distance-view
+  nextDistKey: null,           // for klassement delta calculation
   resultsRaw: null,
   standings: null,
   h2h: {
     riderAId: null,
     riderBId: null,
-    targetMode: "rank",
-    targetRank: 1,
-    targetRiderId: null,
     focusDistanceKey: null,
+    targetRank: 2,             // target position to beat
   },
 };
 
@@ -97,23 +95,25 @@ function truncateDecimals(value, decimals) {
   return Number(str.slice(0, dot + decimals + 1));
 }
 
-function fmtPts(p) {
-  return Number.isFinite(p) ? p.toFixed(3) : "—";
-}
+function fmtPts(p)  { return Number.isFinite(p) ? p.toFixed(3) : "—"; }
 
 function fmtTime(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return "—";
+  const mm = Math.floor(sec / 60);
+  const ss = sec - mm * 60;
+  const ssStr = ss.toFixed(2).padStart(5, "0");
+  return mm > 0 ? `${mm}:${ssStr}` : ssStr;
+}
+
+function fmtTimePrecise(sec) {
   if (!Number.isFinite(sec)) return "—";
-  const sign = sec < 0 ? "-" : "";
+  const sign = sec < 0 ? "-" : "+";
   const abs = Math.abs(sec);
   const mm = Math.floor(abs / 60);
   const ss = abs - mm * 60;
-  const ssStr = ss.toFixed(3).padStart(6, "0");
-  return mm > 0 ? `${sign}${mm}:${ssStr}` : `${sign}${ssStr}`;
-}
-
-function fmtDelta(d) {
-  if (!Number.isFinite(d) || d === 0) return "";
-  return `+${d.toFixed(3)}`;
+  const ssStr = ss.toFixed(2).padStart(5, "0");
+  const t = mm > 0 ? `${mm}:${ssStr}` : ssStr;
+  return `${sign}${t}`;
 }
 
 function esc(str) {
@@ -124,14 +124,14 @@ function getActiveConfig() {
   return MODULE_CONFIG[state.selectedModule].genders[state.selectedGender];
 }
 
-// ── SVG icons (inline) ─────────────────────────────────
+// ── SVG icons ──────────────────────────────────────────
 const ICON = {
   timer:  '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><circle cx="8" cy="9" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 6.5V9l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6.5 2h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   trophy: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M5 13h6M8 10v3M4 3h8v2a4 4 0 0 1-8 0V3ZM4 4H2.5a1 1 0 0 0-1 1v.5A2.5 2.5 0 0 0 4 8M12 4h1.5a1 1 0 0 1 1 1v.5A2.5 2.5 0 0 1 12 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   versus: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M4 12V6M8 12V4M12 12V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
 };
 
-// ── Data: KNSB Stub ────────────────────────────────────
+// ── Data: KNSB stub ────────────────────────────────────
 async function fetchKnsbResults() { return null; }
 
 // ── Mock Data ──────────────────────────────────────────
@@ -188,53 +188,49 @@ function computeStandings(resultsRaw, distances) {
   full.forEach((x,i) => x.rank = i + 1);
   partial.forEach(x => x.rank = null);
   const leader = full[0]?.totalPoints ?? null;
-  for (const a of full) a.delta = Number.isFinite(leader) ? truncateDecimals(a.totalPoints - leader, 3) : null;
-  for (const a of partial) a.delta = null;
+  for (const a of full) a.pointsDelta = Number.isFinite(leader) ? truncateDecimals(a.totalPoints - leader, 3) : null;
+  for (const a of partial) a.pointsDelta = null;
   return { all:[...full, ...partial], full, partial };
 }
 
-function getTargetFromStandings(standings, h2h) {
-  if (!standings?.full?.length) return null;
-  if (h2h.targetMode === "rider") return standings.full.find(x => x.athleteId === h2h.targetRiderId) ?? null;
-  return standings.full[Math.max(0, (Number(h2h.targetRank) || 1) - 1)] ?? null;
-}
+/**
+ * Compute the maximum time an athlete can skate on focusDist
+ * to beat (strictly less than) the target's total points.
+ * Returns the max time in seconds, or null if impossible.
+ */
+function computeMaxTimeForTarget(athlete, distances, focusDist, targetTotal) {
+  if (!athlete || !Number.isFinite(targetTotal) || !focusDist) return null;
 
-function computeH2H(standings, distances, athleteId, target, focusKey) {
-  const athlete = standings.all.find(x => x.athleteId === athleteId);
-  if (!athlete || !target) return { ok:false, reason:"Selecteer een rijder en een target." };
-  const focusDist = distances.find(d => d.key === focusKey) ?? distances[0];
-  if (!focusDist) return { ok:false, reason:"Geen focusafstand beschikbaar." };
-
-  let cur = 0;
+  // Sum all points EXCEPT the focus distance
+  let without = 0;
   for (const d of distances) {
     if (d.key === focusDist.key) continue;
     const p = athlete.points?.[d.key];
-    if (!Number.isFinite(p)) return { ok:false, reason:`${athlete.name} mist geldige punten op ${d.label}.` };
-    cur += p;
+    if (!Number.isFinite(p)) return null; // missing data
+    without += p;
   }
-  cur = truncateDecimals(cur, 3);
+  without = truncateDecimals(without, 3);
 
-  const targetTotal = target.totalPoints;
-  if (!Number.isFinite(targetTotal)) return { ok:false, reason:"Target heeft geen geldig totaal." };
-
+  // To beat target: need total < targetTotal
+  // allowed total = targetTotal - 0.001
   const allowed = truncateDecimals(targetTotal - 0.001, 3);
-  const allowedFocus = truncateDecimals(allowed - cur, 3);
-  if (!Number.isFinite(allowedFocus) || allowedFocus <= 0) return { ok:false, reason:"Onmogelijk om boven het target te komen met de huidige tussenstand." };
+  const allowedPts = truncateDecimals(allowed - without, 3);
+  if (!Number.isFinite(allowedPts) || allowedPts <= 0) return null;
 
-  const maxTime = (allowedFocus + 0.000999) * focusDist.divisor;
-  return { ok:true, athlete, targetAthlete:target, focusDist, currentWithout:cur, allowedTotal:allowed, allowedFocus, maxTime };
+  // Convert back: max time = (allowedPts + truncation margin) * divisor
+  return (allowedPts + 0.000999) * focusDist.divisor;
 }
 
-// ── DOM Cache ──────────────────────────────────────────
+// ── DOM ────────────────────────────────────────────────
 const el = {};
 function cacheEls() {
   ["moduleTabs","genderTabs","viewButtons","viewTitle","viewMeta","contentArea",
-   "h2hRiderA","h2hRiderB","h2hTargetMode","h2hTargetRankWrap","h2hTargetRank",
-   "h2hTargetRiderWrap","h2hTargetRider","h2hFocusDistance","h2hOpen","exportBtn","toast"
+   "h2hRiderA","h2hRiderB","h2hFocusDistance","h2hTargetRank","h2hOpen",
+   "exportBtn","toast"
   ].forEach(id => { el[id] = document.getElementById(id); });
 }
 
-// ── Render Helpers ─────────────────────────────────────
+// ── Render helpers ─────────────────────────────────────
 function setActive(container, key, value) {
   if (!container) return;
   container.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset[key] === value));
@@ -257,6 +253,14 @@ function stHtml(s) {
 }
 
 function podCls(r) { return r >= 1 && r <= 3 ? `podium-${r}` : ""; }
+
+// ── Render: Meta ───────────────────────────────────────
+function renderMeta(cfg) {
+  const m = MODULE_CONFIG[state.selectedModule].label;
+  const g = cfg.label;
+  const d = cfg.distances.map(x => x.label).join("  ·  ");
+  if (el.viewMeta) el.viewMeta.textContent = `${m} — ${g} — ${d}`;
+}
 
 // ── Render: View Buttons ───────────────────────────────
 function renderViewButtons(distances) {
@@ -287,58 +291,63 @@ function renderViewButtons(distances) {
   el.viewButtons.appendChild(h);
 }
 
-// ── Render: H2H Form ──────────────────────────────────
+// ── Render: H2H Sidebar Form ───────────────────────────
 function renderH2HForm(cfg, standings) {
-  const ath = standings.all.map(a => ({ value:a.athleteId, label:`${a.name}${a.rank ? ` (#${a.rank})` : ""}` }));
-  const dis = cfg.distances.map(d => ({ value:d.key, label:d.label }));
+  const ath = standings.all.map(a => ({
+    value: a.athleteId,
+    label: `${a.name}${a.rank ? ` (#${a.rank})` : ""}`,
+  }));
+  const dis = cfg.distances.map(d => ({ value: d.key, label: d.label }));
 
   if (!state.h2h.riderAId) state.h2h.riderAId = ath[0]?.value ?? null;
   if (!state.h2h.riderBId) state.h2h.riderBId = ath[1]?.value ?? ath[0]?.value ?? null;
-  if (!state.h2h.focusDistanceKey) state.h2h.focusDistanceKey = dis[0]?.value ?? null;
+  if (!state.h2h.focusDistanceKey) state.h2h.focusDistanceKey = dis[dis.length - 1]?.value ?? null;
 
   fillSelect(el.h2hRiderA, ath, state.h2h.riderAId);
   fillSelect(el.h2hRiderB, ath, state.h2h.riderBId);
-  fillSelect(el.h2hTargetRider, ath, state.h2h.targetRiderId ?? ath[0]?.value ?? null);
   fillSelect(el.h2hFocusDistance, dis, state.h2h.focusDistanceKey);
-
-  const isRank = state.h2h.targetMode === "rank";
-  el.h2hTargetRankWrap?.classList.toggle("hidden", !isRank);
-  el.h2hTargetRiderWrap?.classList.toggle("hidden", isRank);
-  if (el.h2hTargetMode) el.h2hTargetMode.value = state.h2h.targetMode;
-  if (el.h2hTargetRank) el.h2hTargetRank.value = String(state.h2h.targetRank || 1);
-}
-
-// ── Render: Meta ───────────────────────────────────────
-function renderMeta(cfg) {
-  const m = MODULE_CONFIG[state.selectedModule].label;
-  const g = cfg.label;
-  const d = cfg.distances.map(x => x.label).join("  ·  ");
-  if (el.viewMeta) el.viewMeta.textContent = `${m} — ${g} — ${d}`;
+  if (el.h2hTargetRank) el.h2hTargetRank.value = String(state.h2h.targetRank || 2);
 }
 
 // ── Render: Distance View ──────────────────────────────
 function renderDistanceView(dist, standings) {
   const rows = standings.all
-    .map(a => ({ name:a.name, time:a.times?.[dist.key]??"—", sec:a.seconds?.[dist.key]??null, pts:a.points?.[dist.key]??null, st:a.status?.[dist.key]??"—" }))
-    .sort((a,b) => { if ((a.st==="OK")!==(b.st==="OK")) return a.st==="OK"?-1:1; if (!Number.isFinite(a.sec)||!Number.isFinite(b.sec)) return 0; return a.sec-b.sec; });
+    .map(a => ({
+      name: a.name,
+      time: a.times?.[dist.key] ?? "—",
+      sec: a.seconds?.[dist.key] ?? null,
+      pts: a.points?.[dist.key] ?? null,
+      st: a.status?.[dist.key] ?? "—",
+    }))
+    .sort((a, b) => {
+      if ((a.st === "OK") !== (b.st === "OK")) return a.st === "OK" ? -1 : 1;
+      if (!Number.isFinite(a.sec) || !Number.isFinite(b.sec)) return 0;
+      return a.sec - b.sec;
+    });
 
   const fast = rows[0]?.sec ?? null;
-  rows.forEach(r => r.delta = Number.isFinite(r.sec) && Number.isFinite(fast) ? r.sec - fast : null);
+  rows.forEach(r => {
+    r.timeDelta = Number.isFinite(r.sec) && Number.isFinite(fast) ? r.sec - fast : null;
+  });
 
   el.viewTitle.textContent = dist.label;
   el.contentArea.className = "stage__body stage__body--enter";
   el.contentArea.innerHTML = `
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>#</th><th>Naam</th><th>Tijd</th><th>Delta</th><th>Punten</th><th>Status</th></tr></thead>
-        <tbody>${rows.map((r,i) => {
-          const rk = i+1;
+        <thead><tr><th>#</th><th>Naam</th><th>Tijd</th><th>Achterstand</th><th>Status</th></tr></thead>
+        <tbody>${rows.map((r, i) => {
+          const rk = i + 1;
+          const deltaStr = r.timeDelta === 0
+            ? '<span class="delta delta--leader">Snelst</span>'
+            : Number.isFinite(r.timeDelta)
+              ? `<span class="delta">${fmtTimePrecise(r.timeDelta)}</span>`
+              : "";
           return `<tr class="${podCls(rk)}">
             <td>${rankHtml(rk)}</td>
             <td><span class="athlete-name">${esc(r.name)}</span></td>
             <td class="mono">${esc(r.time)}</td>
-            <td>${r.delta===0?`<span class="delta delta--leader">Snelst</span>`:Number.isFinite(r.delta)?`<span class="delta">+${r.delta.toFixed(2)}s</span>`:""}</td>
-            <td class="mono">${fmtPts(r.pts)}</td>
+            <td>${deltaStr}</td>
             <td>${stHtml(r.st)}</td>
           </tr>`;
         }).join("")}</tbody>
@@ -347,32 +356,74 @@ function renderDistanceView(dist, standings) {
 }
 
 // ── Render: Klassement View ────────────────────────────
+// Shows: rank, name, actual TIMES per distance, total POINTS, time-delta on "next distance"
 function renderStandingsView(distances, standings) {
   el.viewTitle.textContent = "Klassement";
   el.contentArea.className = "stage__body stage__body--enter";
 
+  // Ensure nextDistKey is valid
+  if (!state.nextDistKey || !distances.find(d => d.key === state.nextDistKey)) {
+    state.nextDistKey = distances[distances.length - 1]?.key ?? null;
+  }
+  const nextDist = distances.find(d => d.key === state.nextDistKey);
+
+  // Build next-distance selector
+  const distOptions = distances.map(d =>
+    `<option value="${esc(d.key)}" ${d.key === state.nextDistKey ? "selected" : ""}>${esc(d.label)}</option>`
+  ).join("");
+
+  // Table headers: actual time per distance
   const hdr = distances.map(d => `<th>${esc(d.label)}</th>`).join("");
+
   const body = standings.all.map(a => {
-    const cells = distances.map(d => `<td class="mono">${fmtPts(a.points?.[d.key])}</td>`).join("");
+    // Show actual race times (not points)
+    const cells = distances.map(d => {
+      const t = a.times?.[d.key];
+      return `<td class="mono">${t ? esc(t) : "—"}</td>`;
+    }).join("");
+
+    // Delta: convert points deficit → time on the selected next distance
+    let deltaHtml = "";
+    if (a.pointsDelta === 0) {
+      deltaHtml = '<span class="delta delta--leader">Leader</span>';
+    } else if (Number.isFinite(a.pointsDelta) && nextDist) {
+      const timeBehind = a.pointsDelta * nextDist.divisor;
+      deltaHtml = `<span class="delta">${fmtTimePrecise(timeBehind)}</span>`;
+    }
+
     return `<tr class="${podCls(a.rank)}">
       <td>${rankHtml(a.rank)}</td>
       <td><span class="athlete-name">${esc(a.name)}</span></td>
       ${cells}
       <td class="mono mono--bold">${fmtPts(a.totalPoints)}</td>
-      <td>${a.delta===0?`<span class="delta delta--leader">Leader</span>`:a.delta?`<span class="delta">${fmtDelta(a.delta)}</span>`:""}</td>
+      <td>${deltaHtml}</td>
     </tr>`;
   }).join("");
 
   el.contentArea.innerHTML = `
+    <div class="inline-controls">
+      <span class="inline-controls__label">Achterstand berekend op:</span>
+      <div class="select-wrap">
+        <select id="nextDistSelect">${distOptions}</select>
+      </div>
+    </div>
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>#</th><th>Naam</th>${hdr}<th>Totaal</th><th>Delta</th></tr></thead>
+        <thead><tr><th>#</th><th>Naam</th>${hdr}<th>Punten</th><th>Achterstand</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
     </div>
     <div class="info-box info-box--default">
-      <strong>Regel:</strong> punten per afstand = (tijd in sec) ÷ (meters ÷ 500), <strong>afgekapt op 3 decimalen</strong>. Laagste totaal = eerste in het klassement.
+      <strong>Leeswijzer:</strong> De tijden zijn de werkelijke wedstrijdtijden.
+      Punten = tijd ÷ (meters ÷ 500), afgekapt op 3 decimalen. Laagste totaal = leider.
+      Achterstand toont hoeveel seconden je sneller moet rijden op de gekozen afstand om de leider in te halen.
     </div>`;
+
+  // Bind inline distance picker
+  document.getElementById("nextDistSelect")?.addEventListener("change", (e) => {
+    state.nextDistKey = e.target.value;
+    render();
+  });
 }
 
 // ── Render: Head-to-Head View ──────────────────────────
@@ -383,86 +434,135 @@ function renderHeadToHeadView(distances, standings) {
   const { h2h } = state;
   const rA = standings.all.find(x => x.athleteId === h2h.riderAId);
   const rB = standings.all.find(x => x.athleteId === h2h.riderBId);
+  const focusDist = distances.find(d => d.key === h2h.focusDistanceKey) ?? distances[distances.length - 1];
+  const targetRank = Math.max(1, h2h.targetRank || 2);
 
-  // Comparison table
-  let cmpHtml = "";
+  let html = "";
+
+  // ── 1) Mirror comparison table ──────────────────────
   if (rA && rB) {
-    const rows = distances.map(d => {
-      const pA = rA.points?.[d.key], pB = rB.points?.[d.key];
-      const tA = rA.times?.[d.key]??"—", tB = rB.times?.[d.key]??"—";
-      let cA="", cB="";
-      if (Number.isFinite(pA) && Number.isFinite(pB)) {
-        if (pA < pB) { cA="win"; cB="lose"; } else if (pB < pA) { cB="win"; cA="lose"; }
+    const mirrorRows = distances.map(d => {
+      const secA = rA.seconds?.[d.key];
+      const secB = rB.seconds?.[d.key];
+      const tA = rA.times?.[d.key] ?? "—";
+      const tB = rB.times?.[d.key] ?? "—";
+
+      let clsA = "", clsB = "";
+      if (Number.isFinite(secA) && Number.isFinite(secB)) {
+        if (secA < secB) { clsA = "mirror-cell--win"; clsB = "mirror-cell--lose"; }
+        else if (secB < secA) { clsB = "mirror-cell--win"; clsA = "mirror-cell--lose"; }
       }
-      const diff = (Number.isFinite(pA) && Number.isFinite(pB)) ? truncateDecimals(pA-pB, 3) : null;
-      return `<tr>
-        <td><strong>${esc(d.label)}</strong></td>
-        <td class="mono ${cA}">${esc(tA)}</td><td class="mono ${cA}">${fmtPts(pA)}</td>
-        <td class="mono ${cB}">${esc(tB)}</td><td class="mono ${cB}">${fmtPts(pB)}</td>
-        <td class="mono">${Number.isFinite(diff)? (diff>0?"+":"")+diff.toFixed(3) : "—"}</td>
-      </tr>`;
+
+      // Time difference
+      let diffHtml = "";
+      if (Number.isFinite(secA) && Number.isFinite(secB)) {
+        const diff = secA - secB; // negative = A faster
+        const absDiff = Math.abs(diff).toFixed(2);
+        if (diff < 0) {
+          diffHtml = `<span class="mirror-center__diff mirror-center__diff--neg">◀ ${absDiff}s</span>`;
+        } else if (diff > 0) {
+          diffHtml = `<span class="mirror-center__diff mirror-center__diff--pos">${absDiff}s ▶</span>`;
+        } else {
+          diffHtml = `<span class="mirror-center__diff">gelijk</span>`;
+        }
+      }
+
+      return `<div class="mirror-row">
+        <div class="mirror-cell ${clsA}">${esc(tA)}</div>
+        <div class="mirror-center">
+          <span class="mirror-center__dist">${esc(d.label)}</span>
+          ${diffHtml}
+        </div>
+        <div class="mirror-cell mirror-cell--right ${clsB}">${esc(tB)}</div>
+      </div>`;
     }).join("");
 
-    const tA = rA.totalPoints, tB = rB.totalPoints;
-    let tcA="", tcB="";
-    if (Number.isFinite(tA) && Number.isFinite(tB)) { if (tA<tB){tcA="win";tcB="lose";}else if(tB<tA){tcB="win";tcA="lose";} }
-    const tDiff = (Number.isFinite(tA)&&Number.isFinite(tB)) ? truncateDecimals(tA-tB,3) : null;
+    // Totals row
+    const totA = rA.totalPoints;
+    const totB = rB.totalPoints;
+    let totClsA = "", totClsB = "";
+    if (Number.isFinite(totA) && Number.isFinite(totB)) {
+      if (totA < totB) { totClsA = "mirror-cell--win"; totClsB = "mirror-cell--lose"; }
+      else if (totB < totA) { totClsB = "mirror-cell--win"; totClsA = "mirror-cell--lose"; }
+    }
+    let totDiffHtml = "";
+    if (Number.isFinite(totA) && Number.isFinite(totB)) {
+      const d = truncateDecimals(totA - totB, 3);
+      if (d < 0) totDiffHtml = `<span class="mirror-center__diff mirror-center__diff--neg">◀ ${Math.abs(d).toFixed(3)}</span>`;
+      else if (d > 0) totDiffHtml = `<span class="mirror-center__diff mirror-center__diff--pos">${d.toFixed(3)} ▶</span>`;
+      else totDiffHtml = `<span class="mirror-center__diff">gelijk</span>`;
+    }
 
-    cmpHtml = `
-    <div class="h2h-section">
-      <div class="h2h-section__title">Vergelijking per afstand</div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr><th>Afstand</th><th colspan="2">${esc(rA.name)} #${rA.rank??"—"}</th><th colspan="2">${esc(rB.name)} #${rB.rank??"—"}</th><th>Δ (A−B)</th></tr>
-            <tr><th></th><th>Tijd</th><th>Pnt</th><th>Tijd</th><th>Pnt</th><th></th></tr>
-          </thead>
-          <tbody>
-            ${rows}
-            <tr class="total-row">
-              <td><strong>Totaal</strong></td>
-              <td></td><td class="mono mono--bold ${tcA}">${fmtPts(tA)}</td>
-              <td></td><td class="mono mono--bold ${tcB}">${fmtPts(tB)}</td>
-              <td class="mono mono--bold">${Number.isFinite(tDiff)? (tDiff>0?"+":"")+tDiff.toFixed(3) : "—"}</td>
-            </tr>
-          </tbody>
-        </table>
+    html += `
+    <div class="section-label">Vergelijking</div>
+    <div class="mirror-wrap">
+      <div class="mirror-header">
+        <div class="mirror-header__rider">
+          ${esc(rA.name)}
+          <div class="mirror-header__rank">#${rA.rank ?? "—"} · ${fmtPts(rA.totalPoints)} pnt</div>
+        </div>
+        <div class="mirror-header__vs">VS</div>
+        <div class="mirror-header__rider mirror-header__rider--right">
+          ${esc(rB.name)}
+          <div class="mirror-header__rank">#${rB.rank ?? "—"} · ${fmtPts(rB.totalPoints)} pnt</div>
+        </div>
+      </div>
+      ${mirrorRows}
+      <div class="mirror-row mirror-row--total">
+        <div class="mirror-cell mirror-cell--total ${totClsA}">${fmtPts(totA)} pnt</div>
+        <div class="mirror-center">
+          <span class="mirror-center__dist">Totaal</span>
+          ${totDiffHtml}
+        </div>
+        <div class="mirror-cell mirror-cell--right mirror-cell--total ${totClsB}">${fmtPts(totB)} pnt</div>
       </div>
     </div>`;
   }
 
-  // Target calculation
-  const target = getTargetFromStandings(standings, h2h);
-  const calc = computeH2H(standings, distances, h2h.riderAId, target, h2h.focusDistanceKey);
+  // ── 2) Target time calculations for Rider A ─────────
+  if (rA && focusDist) {
+    const leader = standings.full[0] ?? null;
+    const targetAthlete = standings.full[targetRank - 1] ?? null;
 
-  let calcHtml = "";
-  if (!calc.ok) {
-    calcHtml = `<div class="info-box info-box--error"><strong>Niet beschikbaar:</strong> ${esc(calc.reason)}</div>`;
-  } else {
-    calcHtml = `
-    <div class="h2h-section">
-      <div class="h2h-section__title">Target berekening</div>
-      <div class="kpi-row">
-        <div class="kpi-card">
-          <div class="kpi-card__label">Target totaal (punten)</div>
-          <div class="kpi-card__value">${fmtPts(calc.targetAthlete.totalPoints)}</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-card__label">Punten zonder ${esc(calc.focusDist.label)}</div>
-          <div class="kpi-card__value">${fmtPts(calc.currentWithout)}</div>
-        </div>
-        <div class="kpi-card kpi-card--highlight">
-          <div class="kpi-card__label">Max. tijd op ${esc(calc.focusDist.label)}</div>
-          <div class="kpi-card__value">${fmtTime(calc.maxTime)}</div>
-        </div>
+    // Time to become leader (beat #1)
+    const timeForLeader = leader
+      ? computeMaxTimeForTarget(rA, distances, focusDist, leader.totalPoints)
+      : null;
+
+    // Time to beat target position
+    const timeForTarget = targetAthlete
+      ? computeMaxTimeForTarget(rA, distances, focusDist, targetAthlete.totalPoints)
+      : null;
+
+    // Is rider A already at or above these positions?
+    const alreadyLeader = rA.rank === 1;
+    const alreadyAboveTarget = rA.rank != null && rA.rank <= targetRank;
+
+    html += `
+    <div class="section-label" style="margin-top:24px">Benodigde tijd voor ${esc(rA.name)} op ${esc(focusDist.label)}</div>
+    <div class="kpi-row">
+      <div class="kpi-card kpi-card--gold">
+        <div class="kpi-card__label">Tijd om leider te worden</div>
+        <div class="kpi-card__value">${alreadyLeader ? "Is leider" : (timeForLeader != null ? fmtTime(timeForLeader) : "—")}</div>
+        <div class="kpi-card__sub">${alreadyLeader ? `Staat al op #1 met ${fmtPts(rA.totalPoints)} pnt` : (leader ? `Target: ${esc(leader.name)} (${fmtPts(leader.totalPoints)} pnt)` : "")}</div>
       </div>
-      <div class="info-box info-box--default">
-        <strong>Berekening:</strong> punten worden afgekapt op 3 decimalen met een marge van <code>0.001</code> punt om strikt beter te zijn dan het target.
+      <div class="kpi-card kpi-card--accent">
+        <div class="kpi-card__label">Tijd om positie ${targetRank} te verslaan</div>
+        <div class="kpi-card__value">${alreadyAboveTarget ? `Staat al #${rA.rank}` : (timeForTarget != null ? fmtTime(timeForTarget) : "—")}</div>
+        <div class="kpi-card__sub">${alreadyAboveTarget ? `Al beter dan #${targetRank}` : (targetAthlete ? `Target: ${esc(targetAthlete.name)} (${fmtPts(targetAthlete.totalPoints)} pnt)` : `Positie ${targetRank} bestaat niet`)}</div>
       </div>
     </div>`;
+
+    if (!alreadyLeader && timeForLeader == null && leader && rA.rank !== 1) {
+      html += `<div class="info-box info-box--error"><strong>Let op:</strong> ${esc(rA.name)} kan de leider niet meer inhalen op ${esc(focusDist.label)} alleen, of mist tijden op andere afstanden.</div>`;
+    }
   }
 
-  el.contentArea.innerHTML = cmpHtml + calcHtml;
+  if (!html) {
+    html = `<div class="info-box info-box--default">Selecteer twee rijders in het zijpaneel om te vergelijken.</div>`;
+  }
+
+  el.contentArea.innerHTML = html;
 }
 
 // ── CSV Export ─────────────────────────────────────────
@@ -471,13 +571,12 @@ function exportCSV() {
   const { standings } = state;
   if (!standings?.all?.length) return;
 
-  const hdr = ["Positie","Naam",...cfg.distances.map(d=>`Pnt ${d.label}`),"Totaal","Delta"];
+  const hdr = ["Positie","Naam",...cfg.distances.map(d=>d.label),"Punten"];
   const rows = standings.all.map(a => [
-    a.rank??"",
+    a.rank ?? "",
     a.name,
-    ...cfg.distances.map(d => { const p=a.points?.[d.key]; return Number.isFinite(p)?p.toFixed(3):""; }),
-    Number.isFinite(a.totalPoints)?a.totalPoints.toFixed(3):"",
-    Number.isFinite(a.delta)?`+${a.delta.toFixed(3)}`:""
+    ...cfg.distances.map(d => a.times?.[d.key] ?? ""),
+    Number.isFinite(a.totalPoints) ? a.totalPoints.toFixed(3) : "",
   ]);
 
   const csv = [hdr,...rows].map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
@@ -500,7 +599,7 @@ function showToast(msg) {
   t._timer = setTimeout(() => t.classList.remove("show"), 2500);
 }
 
-// ── Event Binding ──────────────────────────────────────
+// ── Events ─────────────────────────────────────────────
 function bindEvents() {
   el.moduleTabs?.addEventListener("click", e => {
     const btn = e.target.closest("button[data-module]");
@@ -518,22 +617,26 @@ function bindEvents() {
     loadAndRender();
   });
 
-  el.h2hRiderA?.addEventListener("change", () => { state.h2h.riderAId = el.h2hRiderA.value||null; render(); });
-  el.h2hRiderB?.addEventListener("change", () => { state.h2h.riderBId = el.h2hRiderB.value||null; render(); });
-  el.h2hTargetMode?.addEventListener("change", () => { state.h2h.targetMode = el.h2hTargetMode.value; render(); });
-  el.h2hTargetRank?.addEventListener("input", () => { const v=Number(el.h2hTargetRank.value); state.h2h.targetRank = (Number.isFinite(v)&&v>=1)?Math.floor(v):1; render(); });
-  el.h2hTargetRider?.addEventListener("change", () => { state.h2h.targetRiderId = el.h2hTargetRider.value||null; render(); });
-  el.h2hFocusDistance?.addEventListener("change", () => { state.h2h.focusDistanceKey = el.h2hFocusDistance.value||null; render(); });
-  el.h2hOpen?.addEventListener("click", e => { e.preventDefault(); state.selectedView="headToHead"; render(); });
+  el.h2hRiderA?.addEventListener("change", () => { state.h2h.riderAId = el.h2hRiderA.value || null; render(); });
+  el.h2hRiderB?.addEventListener("change", () => { state.h2h.riderBId = el.h2hRiderB.value || null; render(); });
+  el.h2hFocusDistance?.addEventListener("change", () => { state.h2h.focusDistanceKey = el.h2hFocusDistance.value || null; render(); });
+  el.h2hTargetRank?.addEventListener("input", () => {
+    const v = Number(el.h2hTargetRank.value);
+    state.h2h.targetRank = (Number.isFinite(v) && v >= 1) ? Math.floor(v) : 1;
+    render();
+  });
+  el.h2hOpen?.addEventListener("click", e => { e.preventDefault(); state.selectedView = "headToHead"; render(); });
   el.exportBtn?.addEventListener("click", exportCSV);
 }
 
 function resetViewState() {
   state.selectedView = "klassement";
   state.selectedDistanceKey = null;
+  state.nextDistKey = null;
   state.h2h.riderAId = null;
   state.h2h.riderBId = null;
-  state.h2h.focusDistanceKey = getActiveConfig().distances[0]?.key ?? null;
+  const cfg = getActiveConfig();
+  state.h2h.focusDistanceKey = cfg.distances[cfg.distances.length - 1]?.key ?? null;
 }
 
 // ── Main ───────────────────────────────────────────────
@@ -548,7 +651,9 @@ function render() {
   setActive(el.genderTabs, "gender", state.selectedGender);
   renderMeta(cfg);
   renderViewButtons(cfg.distances);
-  if (state.selectedView === "distance" && !state.selectedDistanceKey) state.selectedDistanceKey = cfg.distances[0]?.key ?? null;
+  if (state.selectedView === "distance" && !state.selectedDistanceKey) {
+    state.selectedDistanceKey = cfg.distances[0]?.key ?? null;
+  }
   renderH2HForm(cfg, state.standings);
 
   if (state.selectedView === "distance") {

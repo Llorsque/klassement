@@ -1,16 +1,15 @@
 # NK Sprint & NK Allround — Klassement Tool
 
-Een professionele tool die automatisch een klassement berekent op basis van schaats-tijden, bedoeld voor NK Sprint en NK Allround.
+Professionele tool die automatisch een klassement berekent op basis van schaats-tijden.
 
 ## Features
 
-- **NK Sprint / NK Allround** module-selectie met visuele indicator
+- **NK Sprint / NK Allround** module-selectie
 - **Mannen / Vrouwen** categorie-omschakeling
-- **Afstandsweergave** — resultaten per individuele afstand met delta t.o.v. snelste tijd
-- **Klassement** — totaaloverzicht met punten, totaalscore en delta t.o.v. de leider
-- **Head-to-Head** — volledige vergelijkingstabel + berekening van de benodigde tijd om een target te verslaan
-- **CSV-export** — exporteer het huidige klassement (Excel-compatible, UTF-8 BOM)
-- **Podium-indicatoren** — goud / zilver / brons markering op top-3
+- **Afstandsweergave** — resultaten per afstand, gesorteerd op tijd, met achterstand t.o.v. snelste
+- **Klassement** — totaaloverzicht met werkelijke wedstrijdtijden, totaalpunten, en **achterstand in seconden** berekend op een kiesbare "volgende afstand"
+- **Head-to-Head** — spiegelvergelijking van twee rijders + benodigde tijd om leider te worden en om een target-positie te verslaan
+- **CSV-export** — exporteer het klassement (Excel-compatible)
 
 ## Puntberekening
 
@@ -18,30 +17,18 @@ Een professionele tool die automatisch een klassement berekent op basis van scha
 punten = tijd_in_seconden ÷ (afstand ÷ 500)
 ```
 
-- Punten worden **afgekapt** op 3 decimalen (niet afgerond)
-- Laagste totaalscore = eerste in het klassement
+Punten worden **afgekapt** op 3 decimalen. Laagste totaal = leider.
+
+## Klassement — Achterstand
+
+De kolom "Achterstand" toont niet het puntverschil maar het **tijdverschil in seconden** op een kiesbare afstand. Dit laat zien hoeveel seconden een rijder sneller moet rijden op die afstand om de leider in te halen.
 
 ## Head-to-Head
 
-1. Volledige vergelijkingstabel: tijden + punten per afstand voor beide rijders, met win/loss markering
-2. Target-berekening: de maximaal toegestane tijd op een focusafstand om strikt beter te zijn dan een target (0.001 punt marge)
-
-## KNSB Live Results (toekomstig)
-
-In `app.js` staat een stub `fetchKnsbResults()` met het verwachte datamodel:
-
-```js
-{
-  athletes: [{
-    athleteId: string,
-    name: string,
-    times: { [distanceKey]: "1:09.86" },
-    status: { [distanceKey]: "OK" | "DNS" | "DNF" | "DQ" },
-    meta: { club: string }
-  }]
-}
-```
+1. **Spiegeltabel** — werkelijke tijden naast elkaar met verschil in het midden
+2. **Tijd om leider te worden** — de maximale tijd die Rijder A mag rijden op de focusafstand om #1 te worden
+3. **Tijd om positie X te verslaan** — idem voor een gekozen positie
 
 ## Draaien
 
-Open `index.html` in een browser. Geen build-tools of server nodig.
+Open `index.html` in een browser. Geen build-tools nodig.
