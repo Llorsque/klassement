@@ -56,7 +56,7 @@ Basis-URLs:
 
 ## Auto-polling
 
-Pollt elke **30 seconden**. Status-badge toont "Live" (groen) of "Mockdata" (oranje).
+Pollt elke **2 seconden**. Status-badge toont "Live" (groen) of "Mockdata" (oranje).
 
 ## CORS
 

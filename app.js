@@ -71,7 +71,8 @@ const state = {
     focusDistanceKey: null,
     targetRiderId: null,
   },
-  overzichtFilter: "all", // "all" | "pbs" | "podiums" | distance key
+  overzichtFilter: "all", // "all" | "pbs" | "podiums"
+  overzichtSources: { sprint_m: true, sprint_v: false, allround_m: false, allround_v: false },
 };
 
 // ── Utility ────────────────────────────────────────────
@@ -278,9 +279,25 @@ function parseKnsbResponse(data) {
     const skaterId = r.id ?? r.Id ?? r.skaterId ?? r.skater?.id ?? r.participantId ?? `live_${idx}`;
 
     // PB (personal best / persoonlijk record) detection
-    const pb = !!(r.pb ?? r.PB ?? r.personalBest ?? r.PersonalBest
+    // Can be a boolean, a string "PB"/"PR", a nested object, or a remarks field
+    let pb = false;
+    const pbField = r.pb ?? r.PB ?? r.personalBest ?? r.PersonalBest
       ?? r.isPB ?? r.isPb ?? r.pr ?? r.PR ?? r.isPersonalRecord
-      ?? r.personalRecord ?? r.seasonBest ?? r.SB);
+      ?? r.personalRecord ?? r.seasonBest ?? r.SB ?? null;
+    if (pbField === true || pbField === 1) pb = true;
+    else if (typeof pbField === "string" && pbField.length > 0) pb = true;
+    // Check remarks/tags/notes fields for "PB" or "PR" text
+    if (!pb) {
+      const remarks = String(r.remarks ?? r.Remarks ?? r.note ?? r.notes
+        ?? r.tags ?? r.tag ?? r.label ?? r.labels ?? r.annotation ?? "");
+      if (/\bPB\b|\bPR\b|\bpersonal\s*(best|record)\b/i.test(remarks)) pb = true;
+    }
+    // Check if any field in the object contains the literal string "PB"
+    if (!pb) {
+      for (const v of Object.values(r)) {
+        if (typeof v === "string" && /\bPB\b/.test(v)) { pb = true; break; }
+      }
+    }
 
     return { skaterId: String(skaterId), name: String(name), time: time ? String(time) : null, status, pb };
   });
@@ -383,6 +400,9 @@ function makeMockResults(moduleKey, genderKey) {
   };
 }
 
+// ── Results cache (for cross-module Overzicht) ──────────
+const resultsCache = {}; // key: "sprint_m" etc → { raw, standings }
+
 // ── Data Loading ───────────────────────────────────────
 async function loadData() {
   const m = state.selectedModule;
@@ -403,6 +423,8 @@ async function loadData() {
     }
   }
   state.standings = computeStandings(state.resultsRaw, getActiveConfig().distances);
+  // Cache for Overzicht cross-module use
+  resultsCache[`${m}_${g}`] = { raw: state.resultsRaw, standings: state.standings };
   updateStatusBadge();
 }
 
@@ -605,7 +627,15 @@ function renderViewButtons(distances) {
   const o = document.createElement("button");
   o.className = "view-btn";
   o.innerHTML = `<span class="view-btn__icon">${ICON.dash}</span>Overzicht`;
-  o.onclick = () => { state.selectedView = "overzicht"; render(); };
+  o.onclick = () => {
+    state.selectedView = "overzicht";
+    // Auto-enable current module+gender in source toggles
+    const k = `${state.selectedModule}_${state.selectedGender}`;
+    if (!Object.values(state.overzichtSources).some(v => v)) {
+      state.overzichtSources[k] = true;
+    }
+    render();
+  };
   if (state.selectedView === "overzicht") o.classList.add("active");
   el.viewButtons.appendChild(o);
 }
@@ -906,220 +936,245 @@ function renderHeadToHeadView(distances, standings) {
 }
 
 // ── Render: Overzicht Dashboard ────────────────────────
-function renderOverzichtView(distances, standings) {
+// Gathers data from selected source combinations (Sprint/Allround × M/V)
+function gatherOverzichtData() {
+  const sources = state.overzichtSources;
+  const entries = [];
+
+  for (const [key, enabled] of Object.entries(sources)) {
+    if (!enabled) continue;
+    const [mod, gen] = key.split("_");
+    const cfg = MODULE_CONFIG[mod]?.genders?.[gen];
+    if (!cfg) continue;
+
+    // Use cache if available (has real/live data), otherwise generate mock
+    let st;
+    if (resultsCache[key]) {
+      st = resultsCache[key].standings;
+    } else {
+      const raw = makeMockResults(mod, gen);
+      st = computeStandings(raw, cfg.distances);
+      resultsCache[key] = { raw, standings: st };
+    }
+
+    entries.push({
+      moduleKey: mod, genderKey: gen,
+      label: `${MODULE_CONFIG[mod].label} ${cfg.label}`,
+      shortLabel: `${mod === "sprint" ? "Spr" : "AR"} ${gen === "m" ? "M" : "V"}`,
+      distances: cfg.distances, standings: st,
+    });
+  }
+  return entries;
+}
+
+function renderOverzichtView() {
   el.viewTitle.textContent = "Overzicht";
   el.contentArea.className = "stage__body stage__body--enter";
 
   const filter = state.overzichtFilter;
+  const sources = state.overzichtSources;
 
-  // ── Compute stats ──────────────────────────────────
-  // PBs
+  // ── Source toggles ─────────────────────────────────
+  const sourceOptions = [
+    { key: "sprint_m", label: "Sprint Mannen" },
+    { key: "sprint_v", label: "Sprint Vrouwen" },
+    { key: "allround_m", label: "Allround Mannen" },
+    { key: "allround_v", label: "Allround Vrouwen" },
+  ];
+
+  const activeSrcLabels = sourceOptions.filter(s => sources[s.key]).map(s => s.label);
+  if (el.viewMeta) el.viewMeta.textContent = activeSrcLabels.length > 0 ? activeSrcLabels.join("  ·  ") : "Geen bronnen geselecteerd";
+
+  const srcBar = `<div class="dash-section">
+    <div class="section-label">Bronnen</div>
+    <div class="dash-filters">${sourceOptions.map(s =>
+      `<button class="chip${sources[s.key] ? " chip--on" : ""}" data-source="${esc(s.key)}">${esc(s.label)}</button>`
+    ).join("")}</div>
+  </div>`;
+
+  // ── Gather all data ────────────────────────────────
+  const entries = gatherOverzichtData();
+
+  if (entries.length === 0) {
+    el.contentArea.innerHTML = srcBar + `<div class="info-box info-box--default">Selecteer minimaal één bron hierboven.</div>`;
+    bindOverzichtEvents();
+    return;
+  }
+
+  // ── Compute combined stats ─────────────────────────
+  // Top 3 per distance (per source)
+  const allTop3 = [];
   const allPbs = [];
-  for (const a of standings.all) {
-    for (const d of distances) {
-      if (a.pb?.[d.key]) {
-        allPbs.push({
-          name: a.name,
-          rank: a.rank,
-          distKey: d.key,
-          distLabel: d.label,
-          time: a.times?.[d.key] ?? "—",
-          sec: a.seconds?.[d.key] ?? null,
-        });
+  const podiumCounts = {};
+  let totalAthletes = 0, totalCompleted = 0;
+
+  for (const e of entries) {
+    totalAthletes += e.standings.all.length;
+    totalCompleted += e.standings.full.length;
+
+    for (const d of e.distances) {
+      const sorted = e.standings.all
+        .filter(a => Number.isFinite(a.seconds?.[d.key]))
+        .sort((a, b) => a.seconds[d.key] - b.seconds[d.key]);
+      const top = sorted.slice(0, 3);
+      const fast = sorted[0]?.seconds?.[d.key] ?? null;
+      allTop3.push({
+        source: e.label, dist: d, athletes: top, fast,
+        allSorted: sorted,
+      });
+
+      // Podium counts
+      top.forEach((a, i) => {
+        const id = `${a.name}_${e.label}`;
+        if (!podiumCounts[id]) podiumCounts[id] = { name: a.name, source: e.label, gold: 0, silver: 0, bronze: 0, total: 0 };
+        if (i === 0) podiumCounts[id].gold++;
+        if (i === 1) podiumCounts[id].silver++;
+        if (i === 2) podiumCounts[id].bronze++;
+        podiumCounts[id].total++;
+      });
+
+      // PBs
+      for (const a of e.standings.all) {
+        if (a.pb?.[d.key]) {
+          allPbs.push({ name: a.name, source: e.label, distLabel: d.label, time: a.times?.[d.key] ?? "—" });
+        }
       }
     }
   }
 
-  // PBs per distance
-  const pbsByDist = {};
-  for (const d of distances) pbsByDist[d.key] = { label: d.label, pbs: [] };
-  for (const pb of allPbs) {
-    if (pbsByDist[pb.distKey]) pbsByDist[pb.distKey].pbs.push(pb);
-  }
-
-  // Top 3 per distance
-  const top3PerDist = distances.map(d => {
-    const sorted = standings.all
-      .filter(a => Number.isFinite(a.seconds?.[d.key]))
-      .sort((a, b) => a.seconds[d.key] - b.seconds[d.key])
-      .slice(0, 3);
-    return { dist: d, athletes: sorted };
-  });
-
-  // Podium counts per athlete (across all distances)
-  const podiumCounts = {};
-  for (const { dist, athletes } of top3PerDist) {
-    athletes.forEach((a, i) => {
-      if (!podiumCounts[a.athleteId]) podiumCounts[a.athleteId] = { name: a.name, gold: 0, silver: 0, bronze: 0, total: 0 };
-      if (i === 0) podiumCounts[a.athleteId].gold++;
-      if (i === 1) podiumCounts[a.athleteId].silver++;
-      if (i === 2) podiumCounts[a.athleteId].bronze++;
-      podiumCounts[a.athleteId].total++;
-    });
-  }
   const podiumRanking = Object.values(podiumCounts).sort((a, b) => {
     if (b.gold !== a.gold) return b.gold - a.gold;
     if (b.silver !== a.silver) return b.silver - a.silver;
     return b.bronze - a.bronze;
   });
 
-  // Athletes with PBs count
-  const pbCountPerAthlete = {};
-  for (const pb of allPbs) {
-    pbCountPerAthlete[pb.name] = (pbCountPerAthlete[pb.name] || 0) + 1;
-  }
+  // PB count per athlete
+  const pbPerAthlete = {};
+  for (const p of allPbs) pbPerAthlete[p.name] = (pbPerAthlete[p.name] || 0) + 1;
+
+  const showSource = entries.length > 1; // show source column when multiple sources
 
   // ── Filter bar ─────────────────────────────────────
   const filters = [
     { key: "all", label: "Alles" },
     { key: "pbs", label: `PB's (${allPbs.length})` },
     { key: "podiums", label: "Podiums" },
-    ...distances.map(d => ({ key: d.key, label: d.label })),
   ];
 
-  const filterBar = `<div class="dash-filters">${
-    filters.map(f =>
-      `<button class="dash-filter${filter === f.key ? " dash-filter--active" : ""}" data-filter="${esc(f.key)}">${esc(f.label)}</button>`
-    ).join("")
-  }</div>`;
-
-  // ── KPI cards row ──────────────────────────────────
-  const totalAthletes = standings.all.length;
-  const completedAll = standings.full.length;
-  const totalPbs = allPbs.length;
-
-  const kpis = `<div class="kpi-row">
-    <div class="kpi-card"><div class="kpi-card__label">Deelnemers</div><div class="kpi-card__value">${totalAthletes}</div></div>
-    <div class="kpi-card"><div class="kpi-card__label">Volledig klassement</div><div class="kpi-card__value">${completedAll}</div></div>
-    <div class="kpi-card kpi-card--pb"><div class="kpi-card__label">Persoonlijke records</div><div class="kpi-card__value">${totalPbs}</div><div class="kpi-card__sub">${Object.keys(pbCountPerAthlete).length} rijders</div></div>
-    <div class="kpi-card"><div class="kpi-card__label">Afstanden</div><div class="kpi-card__value">${distances.length}</div></div>
+  const filterBar = `<div class="dash-section">
+    <div class="section-label">Weergave</div>
+    <div class="dash-filters">${filters.map(f =>
+      `<button class="chip${filter === f.key ? " chip--on" : ""}" data-filter="${esc(f.key)}">${esc(f.label)}</button>`
+    ).join("")}</div>
   </div>`;
 
-  // ── Content per filter ─────────────────────────────
+  // ── KPI cards ──────────────────────────────────────
+  const kpis = `<div class="kpi-row">
+    <div class="kpi-card"><div class="kpi-card__label">Deelnemers</div><div class="kpi-card__value">${totalAthletes}</div></div>
+    <div class="kpi-card"><div class="kpi-card__label">Volledig klassement</div><div class="kpi-card__value">${totalCompleted}</div></div>
+    <div class="kpi-card kpi-card--pb"><div class="kpi-card__label">Persoonlijke records</div><div class="kpi-card__value">${allPbs.length}</div><div class="kpi-card__sub">${Object.keys(pbPerAthlete).length} rijders</div></div>
+    <div class="kpi-card"><div class="kpi-card__label">Bronnen</div><div class="kpi-card__value">${entries.length}</div></div>
+  </div>`;
+
+  // ── Tables ─────────────────────────────────────────
   let content = "";
 
+  // TOP 3 PER DISTANCE
   if (filter === "all" || filter === "podiums") {
-    // Top 3 podium cards per distance
-    content += `<div class="section-label">Top 3 per afstand</div><div class="dash-podium-grid">`;
-    for (const { dist, athletes } of top3PerDist) {
-      content += `<div class="dash-podium-card">
-        <div class="dash-podium-card__title">${esc(dist.label)}</div>
-        <div class="dash-podium-card__list">${
-          athletes.length === 0 ? '<div class="dash-podium-card__empty">Geen resultaten</div>' :
-          athletes.map((a, i) => {
-            const medals = ["🥇","🥈","🥉"];
-            const isPb = a.pb?.[dist.key] ?? false;
-            return `<div class="dash-podium-item">
-              <span class="dash-podium-item__medal">${medals[i]}</span>
-              <span class="dash-podium-item__name">${esc(a.name)}</span>
-              <span class="dash-podium-item__time mono">${esc(a.times?.[dist.key] ?? "—")}${pbBadge(isPb)}</span>
-            </div>`;
-          }).join("")
-        }</div>
-      </div>`;
+    const srcCol = showSource ? "<th>Bron</th>" : "";
+    let rows = "";
+    const medals = ["🥇","🥈","🥉"];
+    for (const t of allTop3) {
+      if (t.athletes.length === 0) continue;
+      t.athletes.forEach((a, i) => {
+        const sec = a.seconds?.[t.dist.key];
+        const delta = Number.isFinite(sec) && Number.isFinite(t.fast) ? sec - t.fast : null;
+        const isPb = a.pb?.[t.dist.key] ?? false;
+        const groupCls = i === 0 ? " group-first" : "";
+        rows += `<tr class="${podCls(i+1)}${groupCls}">
+          <td class="dist-col">${i === 0 ? esc(t.dist.label) : ""}</td>
+          ${showSource ? `<td>${i === 0 ? `<span class="source-tag">${esc(t.source)}</span>` : ""}</td>` : ""}
+          <td>${medals[i]}</td>
+          <td><span class="athlete-name">${esc(a.name)}</span></td>
+          <td class="mono">${esc(a.times?.[t.dist.key] ?? "—")}${pbBadge(isPb)}</td>
+          <td>${delta === 0 ? "" : Number.isFinite(delta) ? `<span class="delta">+${fmtTimePrecise(delta)}</span>` : ""}</td>
+        </tr>`;
+      });
     }
-    content += `</div>`;
+    content += `<div class="section-label" style="margin-top:20px">Top 3 per afstand</div>
+      <div class="table-wrap"><table class="table table--grouped">
+        <thead><tr><th>Afstand</th>${srcCol}<th></th><th>Naam</th><th>Tijd</th><th>Verschil</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
   }
 
-  if (filter === "all" || filter === "podiums") {
-    // Medaille spiegel
-    if (podiumRanking.length > 0) {
-      content += `<div class="section-label" style="margin-top:24px">Medaillespiegel</div>
+  // MEDAILLESPIEGEL
+  if ((filter === "all" || filter === "podiums") && podiumRanking.length > 0) {
+    const srcCol = showSource ? "<th>Bron</th>" : "";
+    content += `<div class="section-label" style="margin-top:24px">Medaillespiegel</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Naam</th>${srcCol}<th>🥇</th><th>🥈</th><th>🥉</th><th>Totaal</th></tr></thead>
+        <tbody>${podiumRanking.map(p => `<tr>
+          <td><span class="athlete-name">${esc(p.name)}</span></td>
+          ${showSource ? `<td><span class="source-tag">${esc(p.source)}</span></td>` : ""}
+          <td class="mono">${p.gold || "—"}</td>
+          <td class="mono">${p.silver || "—"}</td>
+          <td class="mono">${p.bronze || "—"}</td>
+          <td class="mono mono--bold">${p.total}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>`;
+  }
+
+  // PBs TABLE
+  if (filter === "all" || filter === "pbs") {
+    if (allPbs.length === 0) {
+      content += `<div class="section-label" style="margin-top:24px">Persoonlijke records</div>
+        <div class="info-box info-box--default">Geen persoonlijke records genoteerd.</div>`;
+    } else {
+      const srcCol = showSource ? "<th>Bron</th>" : "";
+      content += `<div class="section-label" style="margin-top:24px">Persoonlijke records</div>
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>Naam</th><th>🥇</th><th>🥈</th><th>🥉</th><th>Totaal</th></tr></thead>
-          <tbody>${podiumRanking.map(p => `<tr>
+          <thead><tr><th>Naam</th>${srcCol}<th>Afstand</th><th>Tijd</th><th></th></tr></thead>
+          <tbody>${allPbs.map(p => `<tr>
             <td><span class="athlete-name">${esc(p.name)}</span></td>
-            <td class="mono">${p.gold || "—"}</td>
-            <td class="mono">${p.silver || "—"}</td>
-            <td class="mono">${p.bronze || "—"}</td>
-            <td class="mono mono--bold">${p.total}</td>
+            ${showSource ? `<td><span class="source-tag">${esc(p.source)}</span></td>` : ""}
+            <td>${esc(p.distLabel)}</td>
+            <td class="mono">${esc(p.time)}</td>
+            <td><span class="pb-badge">PB</span></td>
           </tr>`).join("")}</tbody>
         </table></div>`;
     }
   }
 
-  if (filter === "all" || filter === "pbs") {
-    // PB overview
-    content += `<div class="section-label" style="margin-top:24px">Persoonlijke records</div>`;
-    if (allPbs.length === 0) {
-      content += `<div class="info-box info-box--default">Geen persoonlijke records genoteerd.</div>`;
-    } else {
-      // PBs grouped by distance
-      for (const d of distances) {
-        const dPbs = pbsByDist[d.key]?.pbs ?? [];
-        if (dPbs.length === 0) continue;
-        content += `<div class="dash-pb-dist">${esc(d.label)} <span class="dash-pb-count">${dPbs.length} PB${dPbs.length !== 1 ? "'s" : ""}</span></div>`;
-        content += `<div class="dash-pb-chips">${
-          dPbs.map(p => `<div class="dash-pb-chip">
-            <span class="dash-pb-chip__name">${esc(p.name)}</span>
-            <span class="dash-pb-chip__time mono">${esc(p.time)}</span>
-            <span class="pb-badge">PB</span>
-          </div>`).join("")
-        }</div>`;
-      }
-    }
+  // PB LEADERBOARD (athletes ranked by PB count)
+  if ((filter === "all" || filter === "pbs") && Object.keys(pbPerAthlete).length > 0) {
+    const sorted = Object.entries(pbPerAthlete).sort((a, b) => b[1] - a[1]);
+    content += `<div class="section-label" style="margin-top:24px">PB ranglijst</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>#</th><th>Naam</th><th>Aantal PB's</th></tr></thead>
+        <tbody>${sorted.map(([name, count], i) => `<tr>
+          <td>${rankHtml(i + 1)}</td>
+          <td><span class="athlete-name">${esc(name)}</span></td>
+          <td class="mono mono--bold">${count}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>`;
   }
 
-  // Single distance filter
-  const singleDist = distances.find(d => d.key === filter);
-  if (singleDist) {
-    const dPbs = pbsByDist[singleDist.key]?.pbs ?? [];
-    const top3 = top3PerDist.find(t => t.dist.key === singleDist.key);
+  el.contentArea.innerHTML = srcBar + filterBar + kpis + content;
+  bindOverzichtEvents();
+}
 
-    content += `<div class="section-label">Top 3 — ${esc(singleDist.label)}</div>`;
-    if (top3 && top3.athletes.length > 0) {
-      const medals = ["🥇","🥈","🥉"];
-      content += `<div class="dash-podium-grid"><div class="dash-podium-card dash-podium-card--wide">
-        <div class="dash-podium-card__list">${
-          top3.athletes.map((a, i) => {
-            const isPb = a.pb?.[singleDist.key] ?? false;
-            return `<div class="dash-podium-item">
-              <span class="dash-podium-item__medal">${medals[i]}</span>
-              <span class="dash-podium-item__name">${esc(a.name)}</span>
-              <span class="dash-podium-item__time mono">${esc(a.times?.[singleDist.key] ?? "—")}${pbBadge(isPb)}</span>
-            </div>`;
-          }).join("")
-        }</div>
-      </div></div>`;
-    }
-
-    if (dPbs.length > 0) {
-      content += `<div class="section-label" style="margin-top:20px">PB's op ${esc(singleDist.label)}</div>
-        <div class="dash-pb-chips">${dPbs.map(p => `<div class="dash-pb-chip">
-          <span class="dash-pb-chip__name">${esc(p.name)}</span>
-          <span class="dash-pb-chip__time mono">${esc(p.time)}</span>
-          <span class="pb-badge">PB</span>
-        </div>`).join("")}</div>`;
-    }
-
-    // Full results for this distance
-    const allForDist = standings.all
-      .filter(a => Number.isFinite(a.seconds?.[singleDist.key]))
-      .sort((a, b) => a.seconds[singleDist.key] - b.seconds[singleDist.key]);
-    if (allForDist.length > 0) {
-      const fast = allForDist[0]?.seconds?.[singleDist.key];
-      content += `<div class="section-label" style="margin-top:20px">Alle resultaten — ${esc(singleDist.label)}</div>
-        <div class="table-wrap"><table class="table">
-          <thead><tr><th>#</th><th>Naam</th><th>Tijd</th><th>Achterstand</th></tr></thead>
-          <tbody>${allForDist.map((a, i) => {
-            const sec = a.seconds[singleDist.key];
-            const delta = sec - fast;
-            const isPb = a.pb?.[singleDist.key] ?? false;
-            return `<tr class="${podCls(i+1)}">
-              <td>${rankHtml(i+1)}</td>
-              <td><span class="athlete-name">${esc(a.name)}</span></td>
-              <td class="mono">${esc(a.times?.[singleDist.key] ?? "—")}${pbBadge(isPb)}</td>
-              <td>${delta===0?'<span class="delta delta--leader">Snelst</span>':`<span class="delta">${fmtTimePrecise(delta)}</span>`}</td>
-            </tr>`;
-          }).join("")}</tbody>
-        </table></div>`;
-    }
-  }
-
-  el.contentArea.innerHTML = filterBar + kpis + content;
-
-  // Bind filter buttons
-  el.contentArea.querySelectorAll(".dash-filter").forEach(btn => {
+function bindOverzichtEvents() {
+  // Source toggles
+  el.contentArea.querySelectorAll("[data-source]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.source;
+      state.overzichtSources[key] = !state.overzichtSources[key];
+      render();
+    });
+  });
+  // Filter buttons
+  el.contentArea.querySelectorAll("[data-filter]").forEach(btn => {
     btn.addEventListener("click", () => {
       state.overzichtFilter = btn.dataset.filter;
       render();
@@ -1217,7 +1272,7 @@ function render() {
     return renderDistanceView(d, state.standings);
   }
   if (state.selectedView === "headToHead") return renderHeadToHeadView(cfg.distances, state.standings);
-  if (state.selectedView === "overzicht") return renderOverzichtView(cfg.distances, state.standings);
+  if (state.selectedView === "overzicht") return renderOverzichtView();
   return renderStandingsView(cfg.distances, state.standings);
 }
 
