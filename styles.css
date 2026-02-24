@@ -400,6 +400,37 @@ code {
 /* ── KPI PB variant ─────────────────────────────────── */
 .kpi-card--pb { border-color: rgba(229,62,62,.25); background: linear-gradient(135deg, rgba(229,62,62,.08) 0%, rgba(229,62,62,.03) 100%); }
 .kpi-card--pb .kpi-card__value { color: #FC8181; }
+.kpi-card__pct {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(252,129,129,.7);
+  margin-left: 6px;
+}
+
+/* ── Percentage badge (tables) ─────────────────────── */
+.pct-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255,255,255,.06);
+  color: var(--text-mid);
+}
+
+/* ── Popup KPI sub-text & percentage ───────────────── */
+.popup-kpi__pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(252,129,129,.65);
+  margin-left: 3px;
+}
+.popup-kpi__sub {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
 
 /* ── Dashboard Filters ──────────────────────────────── */
 .dash-filters {

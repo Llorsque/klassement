@@ -783,6 +783,7 @@ function openAthletePopup(athleteName) {
   // KPI row
   const rankText = athlete.rank ? `#${athlete.rank}` : "—";
   const ptsText = Number.isFinite(athlete.totalPoints) ? fmtPts(athlete.totalPoints) : "—";
+  const pbPct = skated.length > 0 ? ((pbCount / skated.length) * 100).toFixed(0) : "0";
   html += `<div class="popup-kpis">
     <div class="popup-kpi">
       <div class="popup-kpi__label">Klassement</div>
@@ -794,7 +795,8 @@ function openAthletePopup(athleteName) {
     </div>
     <div class="popup-kpi popup-kpi--pb">
       <div class="popup-kpi__label">PB's</div>
-      <div class="popup-kpi__value">${pbCount}</div>
+      <div class="popup-kpi__value">${pbCount} <span class="popup-kpi__pct">${pbPct}%</span></div>
+      <div class="popup-kpi__sub">${pbCount} van ${skated.length} ritten</div>
     </div>
     <div class="popup-kpi">
       <div class="popup-kpi__label">Gereden</div>
@@ -1352,6 +1354,20 @@ function renderOverzichtView() {
   const pbPerAthlete = {};
   for (const p of allPbs) pbPerAthlete[p.name] = (pbPerAthlete[p.name] || 0) + 1;
 
+  // Total individual race results (athlete × distance combos actually skated)
+  let totalRaces = 0;
+  for (const e of entries) {
+    for (const a of e.standings.all) {
+      for (const d of e.distances) {
+        if (a.times?.[d.key] && a.status?.[d.key] === "OK") totalRaces++;
+      }
+    }
+  }
+
+  const pbPctRaces = totalRaces > 0 ? ((allPbs.length / totalRaces) * 100).toFixed(1) : "0.0";
+  const pbSkaterCount = Object.keys(pbPerAthlete).length;
+  const pbPctSkaters = totalAthletes > 0 ? ((pbSkaterCount / totalAthletes) * 100).toFixed(0) : "0";
+
   const showSource = entries.length > 1; // show source column when multiple sources
 
   // ── Filter bar ─────────────────────────────────────
@@ -1371,9 +1387,9 @@ function renderOverzichtView() {
   // ── KPI cards ──────────────────────────────────────
   const kpis = `<div class="kpi-row">
     <div class="kpi-card"><div class="kpi-card__label">Deelnemers</div><div class="kpi-card__value">${totalAthletes}</div></div>
+    <div class="kpi-card"><div class="kpi-card__label">Individuele ritten</div><div class="kpi-card__value">${totalRaces}</div></div>
+    <div class="kpi-card kpi-card--pb"><div class="kpi-card__label">Persoonlijke records</div><div class="kpi-card__value">${allPbs.length}<span class="kpi-card__pct">${pbPctRaces}%</span></div><div class="kpi-card__sub">${pbSkaterCount} van ${totalAthletes} rijders (${pbPctSkaters}%)</div></div>
     <div class="kpi-card"><div class="kpi-card__label">Volledig klassement</div><div class="kpi-card__value">${totalCompleted}</div></div>
-    <div class="kpi-card kpi-card--pb"><div class="kpi-card__label">Persoonlijke records</div><div class="kpi-card__value">${allPbs.length}</div><div class="kpi-card__sub">${Object.keys(pbPerAthlete).length} rijders</div></div>
-    <div class="kpi-card"><div class="kpi-card__label">Bronnen</div><div class="kpi-card__value">${entries.length}</div></div>
   </div>`;
 
   // ── Tables ─────────────────────────────────────────
@@ -1446,17 +1462,34 @@ function renderOverzichtView() {
     }
   }
 
-  // PB LEADERBOARD (athletes ranked by PB count)
+  // PB LEADERBOARD (athletes ranked by PB count, with percentage)
   if ((filter === "all" || filter === "pbs") && Object.keys(pbPerAthlete).length > 0) {
+    // Count races per athlete (for percentage)
+    const racesPerAthlete = {};
+    for (const e of entries) {
+      for (const a of e.standings.all) {
+        for (const d of e.distances) {
+          if (a.times?.[d.key] && a.status?.[d.key] === "OK") {
+            racesPerAthlete[a.name] = (racesPerAthlete[a.name] || 0) + 1;
+          }
+        }
+      }
+    }
     const sorted = Object.entries(pbPerAthlete).sort((a, b) => b[1] - a[1]);
     content += `<div class="section-label" style="margin-top:24px">PB ranglijst</div>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>#</th><th>Naam</th><th>Aantal PB's</th></tr></thead>
-        <tbody>${sorted.map(([name, count], i) => `<tr>
+        <thead><tr><th>#</th><th>Naam</th><th>PB's</th><th>Ritten</th><th>%</th></tr></thead>
+        <tbody>${sorted.map(([name, count], i) => {
+          const races = racesPerAthlete[name] || 0;
+          const pct = races > 0 ? ((count / races) * 100).toFixed(0) : "0";
+          return `<tr>
           <td>${rankHtml(i + 1)}</td>
           <td><span class="athlete-name">${esc(name)}</span></td>
           <td class="mono mono--bold">${count}</td>
-        </tr>`).join("")}</tbody>
+          <td class="mono">${races}</td>
+          <td class="mono"><span class="pct-badge">${pct}%</span></td>
+        </tr>`;
+        }).join("")}</tbody>
       </table></div>`;
   }
 
