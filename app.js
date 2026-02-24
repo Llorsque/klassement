@@ -69,8 +69,9 @@ const state = {
     riderAId: null,
     riderBId: null,
     focusDistanceKey: null,
-    targetRiderId: null,         // target skater to beat
+    targetRiderId: null,
   },
+  overzichtFilter: "all", // "all" | "pbs" | "podiums" | distance key
 };
 
 // ── Utility ────────────────────────────────────────────
@@ -129,6 +130,7 @@ const ICON = {
   timer:  '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><circle cx="8" cy="9" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M8 6.5V9l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6.5 2h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   trophy: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M5 13h6M8 10v3M4 3h8v2a4 4 0 0 1-8 0V3ZM4 4H2.5a1 1 0 0 0-1 1v.5A2.5 2.5 0 0 0 4 8M12 4h1.5a1 1 0 0 1 1 1v.5A2.5 2.5 0 0 1 12 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   versus: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M4 12V6M8 12V4M12 12V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  dash:   '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>',
 };
 
 // ── Live Data: KNSB URL Mapping ────────────────────────
@@ -173,7 +175,7 @@ const API_BASE = "https://liveresults.schaatsen.nl";
 // ── Live Data: State ───────────────────────────────────
 let dataSource = "mock"; // "live" | "mock"
 let pollTimer = null;
-const POLL_INTERVAL = 30_000; // 30 seconds
+const POLL_INTERVAL = 2_000; // 2 seconds
 let lastFetchLog = [];
 
 // ── Live Data: Fetch single competition results ────────
@@ -275,7 +277,12 @@ function parseKnsbResponse(data) {
 
     const skaterId = r.id ?? r.Id ?? r.skaterId ?? r.skater?.id ?? r.participantId ?? `live_${idx}`;
 
-    return { skaterId: String(skaterId), name: String(name), time: time ? String(time) : null, status };
+    // PB (personal best / persoonlijk record) detection
+    const pb = !!(r.pb ?? r.PB ?? r.personalBest ?? r.PersonalBest
+      ?? r.isPB ?? r.isPb ?? r.pr ?? r.PR ?? r.isPersonalRecord
+      ?? r.personalRecord ?? r.seasonBest ?? r.SB);
+
+    return { skaterId: String(skaterId), name: String(name), time: time ? String(time) : null, status, pb };
   });
 }
 
@@ -318,19 +325,23 @@ async function fetchLiveResults(moduleKey, genderKey) {
           meta: { club: "—" },
           times: {},
           status: {},
+          pb: {},
         });
       }
       const athlete = athleteMap.get(nk);
       athlete.times[key] = r.time;
       athlete.status[key] = r.status;
+      athlete.pb[key] = r.pb || false;
     }
   }
 
   // Fill missing distances as DNS
   for (const [, ath] of athleteMap) {
+    if (!ath.pb) ath.pb = {};
     for (const d of cfg.distances) {
       if (!ath.times[d.key]) ath.times[d.key] = null;
       if (!ath.status[d.key]) ath.status[d.key] = "DNS";
+      if (!ath.pb[d.key]) ath.pb[d.key] = false;
     }
   }
 
@@ -351,14 +362,23 @@ function makeMockResults(moduleKey, genderKey) {
     allround_v: [["38.30","1:58.60","4:08.10","7:11.20"],["38.55","1:58.20","4:07.40","7:09.90"],["38.10","1:59.80","4:10.80","7:14.30"],["39.00","1:57.90","4:09.20","7:13.10"],["39.50","2:01.40","4:15.40","7:20.70"],["38.80","1:59.10","4:12.50","7:17.80"],["38.40","1:58.90","4:08.90","7:12.40"],["41.00","2:05.00","4:25.00","7:35.00"]],
   };
   const rows = presets[`${moduleKey}_${genderKey}`];
+  // PB mock: some athletes get PBs on specific distances for demo
+  const pbPresets = {
+    sprint_m:    [[true,false,false,false],[false,true,false,false],[false,false,true,false],[true,true,false,false],[false,false,false,false],[false,false,false,true],[true,false,true,false],[false,false,false,false]],
+    sprint_v:    [[false,true,false,false],[true,false,false,true],[false,false,false,false],[false,false,true,false],[false,false,false,false],[true,false,false,false],[false,true,false,false],[false,false,false,false]],
+    allround_m:  [[true,false,false,false],[false,false,true,false],[false,true,false,false],[false,false,false,true],[false,false,false,false],[true,false,false,false],[false,false,true,false],[false,false,false,false]],
+    allround_v:  [[false,false,true,false],[true,false,false,false],[false,true,false,false],[false,false,false,false],[false,false,false,false],[false,false,true,false],[true,false,false,true],[false,false,false,false]],
+  };
+  const pbRows = pbPresets[`${moduleKey}_${genderKey}`];
   return {
     athletes: names[genderKey].map((name, idx) => {
-      const times = {}, status = {};
+      const times = {}, status = {}, pb = {};
       cfg.distances.forEach((d, i) => {
         times[d.key] = rows[idx][i] ?? null;
         status[d.key] = times[d.key] ? "OK" : "DNS";
+        pb[d.key] = pbRows?.[idx]?.[i] ?? false;
       });
-      return { athleteId: `a${idx+1}`, name, meta:{ club:"—" }, times, status };
+      return { athleteId: `a${idx+1}`, name, meta:{ club:"—" }, times, status, pb };
     }),
   };
 }
@@ -401,20 +421,22 @@ function updateStatusBadge() {
 }
 
 // ── Auto-Polling ───────────────────────────────────────
+let polling = false;
 function startPolling() {
   stopPolling();
-  pollTimer = setInterval(async () => {
+  polling = true;
+  (async function tick() {
+    if (!polling) return;
     await loadData();
     render();
-    if (dataSource === "live") {
-      showToast("Data bijgewerkt");
-    }
-  }, POLL_INTERVAL);
+    if (polling) pollTimer = setTimeout(tick, POLL_INTERVAL);
+  })();
 }
 
 function stopPolling() {
+  polling = false;
   if (pollTimer) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     pollTimer = null;
   }
 }
@@ -540,6 +562,10 @@ function distRankHtml(pos) {
   return ` <span class="dist-pos">(${pos})</span>`;
 }
 
+function pbBadge(isPb) {
+  return isPb ? ' <span class="pb-badge">PB</span>' : "";
+}
+
 // ── Render: Meta ───────────────────────────────────────
 function renderMeta(cfg) {
   const m = MODULE_CONFIG[state.selectedModule].label;
@@ -575,6 +601,13 @@ function renderViewButtons(distances) {
   h.onclick = () => { state.selectedView = "headToHead"; render(); };
   if (state.selectedView === "headToHead") h.classList.add("active");
   el.viewButtons.appendChild(h);
+
+  const o = document.createElement("button");
+  o.className = "view-btn";
+  o.innerHTML = `<span class="view-btn__icon">${ICON.dash}</span>Overzicht`;
+  o.onclick = () => { state.selectedView = "overzicht"; render(); };
+  if (state.selectedView === "overzicht") o.classList.add("active");
+  el.viewButtons.appendChild(o);
 }
 
 // ── Render: H2H Sidebar Form ───────────────────────────
@@ -605,6 +638,7 @@ function renderDistanceView(dist, standings) {
       sec: a.seconds?.[dist.key] ?? null,
       pts: a.points?.[dist.key] ?? null,
       st: a.status?.[dist.key] ?? "—",
+      isPb: a.pb?.[dist.key] ?? false,
     }))
     .sort((a, b) => {
       if ((a.st === "OK") !== (b.st === "OK")) return a.st === "OK" ? -1 : 1;
@@ -633,7 +667,7 @@ function renderDistanceView(dist, standings) {
           return `<tr class="${podCls(rk)}">
             <td>${rankHtml(rk)}</td>
             <td><span class="athlete-name">${esc(r.name)}</span></td>
-            <td class="mono">${esc(r.time)}</td>
+            <td class="mono">${esc(r.time)}${pbBadge(r.isPb)}</td>
             <td>${deltaStr}</td>
             <td>${stHtml(r.st)}</td>
           </tr>`;
@@ -706,7 +740,7 @@ function renderStandingsView(distances, standings) {
       <strong>Leeswijzer:</strong> De tijden zijn de werkelijke wedstrijdtijden.
       Punten = tijd ÷ (meters ÷ 500), afgekapt op 3 decimalen. Laagste totaal = leider.
       Achterstand toont hoeveel seconden je sneller moet rijden op de gekozen afstand om de leider in te halen.
-      ${dataSource === "live" ? "<br><strong>Databron:</strong> liveresults.schaatsen.nl — automatisch bijgewerkt elke 30 sec." : "<br><strong>Databron:</strong> Mockdata (geen live verbinding beschikbaar)."}
+      ${dataSource === "live" ? "<br><strong>Databron:</strong> liveresults.schaatsen.nl — automatisch bijgewerkt elke 2 sec." : "<br><strong>Databron:</strong> Mockdata (geen live verbinding beschikbaar)."}
     </div>`;
 
   // Bind inline distance picker
@@ -871,6 +905,228 @@ function renderHeadToHeadView(distances, standings) {
   el.contentArea.innerHTML = html;
 }
 
+// ── Render: Overzicht Dashboard ────────────────────────
+function renderOverzichtView(distances, standings) {
+  el.viewTitle.textContent = "Overzicht";
+  el.contentArea.className = "stage__body stage__body--enter";
+
+  const filter = state.overzichtFilter;
+
+  // ── Compute stats ──────────────────────────────────
+  // PBs
+  const allPbs = [];
+  for (const a of standings.all) {
+    for (const d of distances) {
+      if (a.pb?.[d.key]) {
+        allPbs.push({
+          name: a.name,
+          rank: a.rank,
+          distKey: d.key,
+          distLabel: d.label,
+          time: a.times?.[d.key] ?? "—",
+          sec: a.seconds?.[d.key] ?? null,
+        });
+      }
+    }
+  }
+
+  // PBs per distance
+  const pbsByDist = {};
+  for (const d of distances) pbsByDist[d.key] = { label: d.label, pbs: [] };
+  for (const pb of allPbs) {
+    if (pbsByDist[pb.distKey]) pbsByDist[pb.distKey].pbs.push(pb);
+  }
+
+  // Top 3 per distance
+  const top3PerDist = distances.map(d => {
+    const sorted = standings.all
+      .filter(a => Number.isFinite(a.seconds?.[d.key]))
+      .sort((a, b) => a.seconds[d.key] - b.seconds[d.key])
+      .slice(0, 3);
+    return { dist: d, athletes: sorted };
+  });
+
+  // Podium counts per athlete (across all distances)
+  const podiumCounts = {};
+  for (const { dist, athletes } of top3PerDist) {
+    athletes.forEach((a, i) => {
+      if (!podiumCounts[a.athleteId]) podiumCounts[a.athleteId] = { name: a.name, gold: 0, silver: 0, bronze: 0, total: 0 };
+      if (i === 0) podiumCounts[a.athleteId].gold++;
+      if (i === 1) podiumCounts[a.athleteId].silver++;
+      if (i === 2) podiumCounts[a.athleteId].bronze++;
+      podiumCounts[a.athleteId].total++;
+    });
+  }
+  const podiumRanking = Object.values(podiumCounts).sort((a, b) => {
+    if (b.gold !== a.gold) return b.gold - a.gold;
+    if (b.silver !== a.silver) return b.silver - a.silver;
+    return b.bronze - a.bronze;
+  });
+
+  // Athletes with PBs count
+  const pbCountPerAthlete = {};
+  for (const pb of allPbs) {
+    pbCountPerAthlete[pb.name] = (pbCountPerAthlete[pb.name] || 0) + 1;
+  }
+
+  // ── Filter bar ─────────────────────────────────────
+  const filters = [
+    { key: "all", label: "Alles" },
+    { key: "pbs", label: `PB's (${allPbs.length})` },
+    { key: "podiums", label: "Podiums" },
+    ...distances.map(d => ({ key: d.key, label: d.label })),
+  ];
+
+  const filterBar = `<div class="dash-filters">${
+    filters.map(f =>
+      `<button class="dash-filter${filter === f.key ? " dash-filter--active" : ""}" data-filter="${esc(f.key)}">${esc(f.label)}</button>`
+    ).join("")
+  }</div>`;
+
+  // ── KPI cards row ──────────────────────────────────
+  const totalAthletes = standings.all.length;
+  const completedAll = standings.full.length;
+  const totalPbs = allPbs.length;
+
+  const kpis = `<div class="kpi-row">
+    <div class="kpi-card"><div class="kpi-card__label">Deelnemers</div><div class="kpi-card__value">${totalAthletes}</div></div>
+    <div class="kpi-card"><div class="kpi-card__label">Volledig klassement</div><div class="kpi-card__value">${completedAll}</div></div>
+    <div class="kpi-card kpi-card--pb"><div class="kpi-card__label">Persoonlijke records</div><div class="kpi-card__value">${totalPbs}</div><div class="kpi-card__sub">${Object.keys(pbCountPerAthlete).length} rijders</div></div>
+    <div class="kpi-card"><div class="kpi-card__label">Afstanden</div><div class="kpi-card__value">${distances.length}</div></div>
+  </div>`;
+
+  // ── Content per filter ─────────────────────────────
+  let content = "";
+
+  if (filter === "all" || filter === "podiums") {
+    // Top 3 podium cards per distance
+    content += `<div class="section-label">Top 3 per afstand</div><div class="dash-podium-grid">`;
+    for (const { dist, athletes } of top3PerDist) {
+      content += `<div class="dash-podium-card">
+        <div class="dash-podium-card__title">${esc(dist.label)}</div>
+        <div class="dash-podium-card__list">${
+          athletes.length === 0 ? '<div class="dash-podium-card__empty">Geen resultaten</div>' :
+          athletes.map((a, i) => {
+            const medals = ["🥇","🥈","🥉"];
+            const isPb = a.pb?.[dist.key] ?? false;
+            return `<div class="dash-podium-item">
+              <span class="dash-podium-item__medal">${medals[i]}</span>
+              <span class="dash-podium-item__name">${esc(a.name)}</span>
+              <span class="dash-podium-item__time mono">${esc(a.times?.[dist.key] ?? "—")}${pbBadge(isPb)}</span>
+            </div>`;
+          }).join("")
+        }</div>
+      </div>`;
+    }
+    content += `</div>`;
+  }
+
+  if (filter === "all" || filter === "podiums") {
+    // Medaille spiegel
+    if (podiumRanking.length > 0) {
+      content += `<div class="section-label" style="margin-top:24px">Medaillespiegel</div>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Naam</th><th>🥇</th><th>🥈</th><th>🥉</th><th>Totaal</th></tr></thead>
+          <tbody>${podiumRanking.map(p => `<tr>
+            <td><span class="athlete-name">${esc(p.name)}</span></td>
+            <td class="mono">${p.gold || "—"}</td>
+            <td class="mono">${p.silver || "—"}</td>
+            <td class="mono">${p.bronze || "—"}</td>
+            <td class="mono mono--bold">${p.total}</td>
+          </tr>`).join("")}</tbody>
+        </table></div>`;
+    }
+  }
+
+  if (filter === "all" || filter === "pbs") {
+    // PB overview
+    content += `<div class="section-label" style="margin-top:24px">Persoonlijke records</div>`;
+    if (allPbs.length === 0) {
+      content += `<div class="info-box info-box--default">Geen persoonlijke records genoteerd.</div>`;
+    } else {
+      // PBs grouped by distance
+      for (const d of distances) {
+        const dPbs = pbsByDist[d.key]?.pbs ?? [];
+        if (dPbs.length === 0) continue;
+        content += `<div class="dash-pb-dist">${esc(d.label)} <span class="dash-pb-count">${dPbs.length} PB${dPbs.length !== 1 ? "'s" : ""}</span></div>`;
+        content += `<div class="dash-pb-chips">${
+          dPbs.map(p => `<div class="dash-pb-chip">
+            <span class="dash-pb-chip__name">${esc(p.name)}</span>
+            <span class="dash-pb-chip__time mono">${esc(p.time)}</span>
+            <span class="pb-badge">PB</span>
+          </div>`).join("")
+        }</div>`;
+      }
+    }
+  }
+
+  // Single distance filter
+  const singleDist = distances.find(d => d.key === filter);
+  if (singleDist) {
+    const dPbs = pbsByDist[singleDist.key]?.pbs ?? [];
+    const top3 = top3PerDist.find(t => t.dist.key === singleDist.key);
+
+    content += `<div class="section-label">Top 3 — ${esc(singleDist.label)}</div>`;
+    if (top3 && top3.athletes.length > 0) {
+      const medals = ["🥇","🥈","🥉"];
+      content += `<div class="dash-podium-grid"><div class="dash-podium-card dash-podium-card--wide">
+        <div class="dash-podium-card__list">${
+          top3.athletes.map((a, i) => {
+            const isPb = a.pb?.[singleDist.key] ?? false;
+            return `<div class="dash-podium-item">
+              <span class="dash-podium-item__medal">${medals[i]}</span>
+              <span class="dash-podium-item__name">${esc(a.name)}</span>
+              <span class="dash-podium-item__time mono">${esc(a.times?.[singleDist.key] ?? "—")}${pbBadge(isPb)}</span>
+            </div>`;
+          }).join("")
+        }</div>
+      </div></div>`;
+    }
+
+    if (dPbs.length > 0) {
+      content += `<div class="section-label" style="margin-top:20px">PB's op ${esc(singleDist.label)}</div>
+        <div class="dash-pb-chips">${dPbs.map(p => `<div class="dash-pb-chip">
+          <span class="dash-pb-chip__name">${esc(p.name)}</span>
+          <span class="dash-pb-chip__time mono">${esc(p.time)}</span>
+          <span class="pb-badge">PB</span>
+        </div>`).join("")}</div>`;
+    }
+
+    // Full results for this distance
+    const allForDist = standings.all
+      .filter(a => Number.isFinite(a.seconds?.[singleDist.key]))
+      .sort((a, b) => a.seconds[singleDist.key] - b.seconds[singleDist.key]);
+    if (allForDist.length > 0) {
+      const fast = allForDist[0]?.seconds?.[singleDist.key];
+      content += `<div class="section-label" style="margin-top:20px">Alle resultaten — ${esc(singleDist.label)}</div>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>#</th><th>Naam</th><th>Tijd</th><th>Achterstand</th></tr></thead>
+          <tbody>${allForDist.map((a, i) => {
+            const sec = a.seconds[singleDist.key];
+            const delta = sec - fast;
+            const isPb = a.pb?.[singleDist.key] ?? false;
+            return `<tr class="${podCls(i+1)}">
+              <td>${rankHtml(i+1)}</td>
+              <td><span class="athlete-name">${esc(a.name)}</span></td>
+              <td class="mono">${esc(a.times?.[singleDist.key] ?? "—")}${pbBadge(isPb)}</td>
+              <td>${delta===0?'<span class="delta delta--leader">Snelst</span>':`<span class="delta">${fmtTimePrecise(delta)}</span>`}</td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table></div>`;
+    }
+  }
+
+  el.contentArea.innerHTML = filterBar + kpis + content;
+
+  // Bind filter buttons
+  el.contentArea.querySelectorAll(".dash-filter").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.overzichtFilter = btn.dataset.filter;
+      render();
+    });
+  });
+}
+
 // ── CSV Export ─────────────────────────────────────────
 function exportCSV() {
   const cfg = getActiveConfig();
@@ -961,6 +1217,7 @@ function render() {
     return renderDistanceView(d, state.standings);
   }
   if (state.selectedView === "headToHead") return renderHeadToHeadView(cfg.distances, state.standings);
+  if (state.selectedView === "overzicht") return renderOverzichtView(cfg.distances, state.standings);
   return renderStandingsView(cfg.distances, state.standings);
 }
 
