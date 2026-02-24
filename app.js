@@ -38,8 +38,8 @@ const MODULE_CONFIG = {
         label: "Mannen",
         distances: [
           { key: "d1_500",   meters: 500,   label: "500m",    divisor: 1  },
-          { key: "d1_1500",  meters: 1500,  label: "1500m",   divisor: 3  },
           { key: "d1_5000",  meters: 5000,  label: "5000m",   divisor: 10 },
+          { key: "d1_1500",  meters: 1500,  label: "1500m",   divisor: 3  },
           { key: "d1_10000", meters: 10000, label: "10.000m", divisor: 20 },
         ],
       },
@@ -47,14 +47,149 @@ const MODULE_CONFIG = {
         label: "Vrouwen",
         distances: [
           { key: "d1_500",  meters: 500,  label: "500m",  divisor: 1  },
-          { key: "d1_1500", meters: 1500, label: "1500m", divisor: 3  },
           { key: "d1_3000", meters: 3000, label: "3000m", divisor: 6  },
+          { key: "d1_1500", meters: 1500, label: "1500m", divisor: 3  },
           { key: "d1_5000", meters: 5000, label: "5000m", divisor: 10 },
         ],
       },
     },
   },
 };
+
+// ── Final Distance Qualification (Allround only) ──────
+// Only 8 skaters qualify for the final distance (5000m vrouwen / 10.000m mannen).
+const QUAL_CONFIG = {
+  allround: {
+    v: {
+      qualDist: "d1_3000",   // qualifying distance (2nd skated)
+      finalDist: "d1_5000",  // final distance (only 8 ride)
+      first3: ["d1_500", "d1_3000", "d1_1500"],
+      first2: ["d1_500", "d1_3000"],
+    },
+    m: {
+      qualDist: "d1_5000",
+      finalDist: "d1_10000",
+      first3: ["d1_500", "d1_5000", "d1_1500"],
+      first2: ["d1_500", "d1_5000"],
+    },
+  },
+};
+
+/**
+ * Compute who qualifies for the final allround distance.
+ * status: "both" (in both top 8) | "dist_swap" (via distance top 8) |
+ *         "klass_only" (klass top 8 but not dist → out) | "out"
+ */
+function computeQualification(athletes, distances, qualCfg, mode) {
+  if (!qualCfg || !athletes?.length) return null;
+
+  const distKeys = mode === "after2" ? qualCfg.first2 : qualCfg.first3;
+  const qualDistLabel = distances.find(d => d.key === qualCfg.qualDist)?.label ?? "afstand";
+  const finalDistLabel = distances.find(d => d.key === qualCfg.finalDist)?.label ?? "afstand";
+
+  // Partial klassement: sum 500m-equivalent points for the chosen distances
+  const klassStandings = athletes.map(a => {
+    let total = 0, count = 0;
+    for (const dk of distKeys) {
+      const dist = distances.find(d => d.key === dk);
+      if (!dist) continue;
+      const sec = a.seconds?.[dk];
+      if (Number.isFinite(sec)) {
+        total += truncateDecimals(sec / dist.divisor, 3);
+        count++;
+      }
+    }
+    return { ...a, partialPts: count === distKeys.length ? truncateDecimals(total, 3) : null, partialCount: count };
+  });
+
+  const klassRanked = klassStandings
+    .filter(a => a.partialPts !== null)
+    .sort((a, b) => a.partialPts - b.partialPts);
+  klassRanked.forEach((a, i) => a.klassRank = i + 1);
+  const klassTop8 = klassRanked.slice(0, 8);
+  const klassTop8Names = new Set(klassTop8.map(a => a.name));
+
+  // Distance top 8 (qualifying distance)
+  const distRanked = athletes
+    .filter(a => Number.isFinite(a.seconds?.[qualCfg.qualDist]))
+    .sort((a, b) => a.seconds[qualCfg.qualDist] - b.seconds[qualCfg.qualDist]);
+  distRanked.forEach((a, i) => a.distRank = i + 1);
+  const distTop8 = distRanked.slice(0, 8);
+  const distTop8Names = new Set(distTop8.map(a => a.name));
+
+  // ── Algorithm ──
+  const details = [];
+
+  // In BOTH top 8 → auto-qualified
+  const inBoth = klassTop8.filter(a => distTop8Names.has(a.name));
+  for (const a of inBoth) {
+    details.push({
+      name: a.name, athleteId: a.athleteId,
+      klassRank: a.klassRank,
+      distRank: distRanked.find(x => x.name === a.name)?.distRank ?? null,
+      partialPts: a.partialPts,
+      distTime: a.times?.[qualCfg.qualDist] ?? "—",
+      status: "both", reason: "Beide top 8",
+    });
+  }
+
+  // Klass top 8 NOT in dist top 8 → open spots
+  const klassOnly = klassTop8.filter(a => !distTop8Names.has(a.name));
+
+  // Dist top 8 NOT in klass top 8 → candidates for open spots
+  const distOnly = distTop8.filter(a => !klassTop8Names.has(a.name));
+
+  // Fill open spots with dist candidates (in dist rank order)
+  const filledFromDist = distOnly.slice(0, klassOnly.length);
+  for (const a of filledFromDist) {
+    details.push({
+      name: a.name, athleteId: a.athleteId,
+      klassRank: klassRanked.find(x => x.name === a.name)?.klassRank ?? null,
+      distRank: distRanked.find(x => x.name === a.name)?.distRank ?? null,
+      partialPts: klassStandings.find(x => x.name === a.name)?.partialPts ?? null,
+      distTime: a.times?.[qualCfg.qualDist] ?? "—",
+      status: "dist_swap", reason: `Via ${qualDistLabel}`,
+    });
+  }
+
+  // Klass-only: had spot in klassement but not in dist top 8 → out
+  for (const a of klassOnly) {
+    details.push({
+      name: a.name, athleteId: a.athleteId,
+      klassRank: a.klassRank,
+      distRank: distRanked.find(x => x.name === a.name)?.distRank ?? null,
+      partialPts: a.partialPts,
+      distTime: a.times?.[qualCfg.qualDist] ?? "—",
+      status: "klass_only", reason: `Niet in top 8 ${qualDistLabel}`,
+    });
+  }
+
+  // Dist-only who didn't fill a spot
+  for (const a of distOnly.slice(klassOnly.length)) {
+    details.push({
+      name: a.name, athleteId: a.athleteId,
+      klassRank: klassRanked.find(x => x.name === a.name)?.klassRank ?? null,
+      distRank: distRanked.find(x => x.name === a.name)?.distRank ?? null,
+      partialPts: klassStandings.find(x => x.name === a.name)?.partialPts ?? null,
+      distTime: a.times?.[qualCfg.qualDist] ?? "—",
+      status: "out", reason: "Geen open plek",
+    });
+  }
+
+  // Sort: qualified first (both → dist_swap), then klass_only, then out
+  const order = { both: 0, dist_swap: 1, klass_only: 2, out: 3 };
+  details.sort((a, b) => {
+    const so = (order[a.status] ?? 9) - (order[b.status] ?? 9);
+    if (so !== 0) return so;
+    return (a.klassRank ?? 99) - (b.klassRank ?? 99);
+  });
+
+  const qualifiedCount = inBoth.length + filledFromDist.length;
+
+  return { details, qualifiedCount, qualDistLabel, finalDistLabel, mode,
+    klassTop8Count: klassTop8.length, distTop8Count: distTop8.length,
+    klassRanked, distRanked };
+}
 
 // ── State ──────────────────────────────────────────────
 const state = {
@@ -132,6 +267,7 @@ const ICON = {
   trophy: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M5 13h6M8 10v3M4 3h8v2a4 4 0 0 1-8 0V3ZM4 4H2.5a1 1 0 0 0-1 1v.5A2.5 2.5 0 0 0 4 8M12 4h1.5a1 1 0 0 1 1 1v.5A2.5 2.5 0 0 1 12 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   versus: '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M4 12V6M8 12V4M12 12V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
   dash:   '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="1.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9.5" y="9.5" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>',
+  qual:   '<svg width="16" height="16" fill="none" viewBox="0 0 16 16"><path d="M8 1.5l1.5 3 3.5.5-2.5 2.5.5 3.5L8 9.5l-3 1.5.5-3.5L3 5l3.5-.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5 12.5l-1 2.5 4-1.5 4 1.5-1-2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
 // ── Live Data: KNSB URL Mapping ────────────────────────
@@ -940,6 +1076,16 @@ function renderViewButtons(distances) {
   };
   if (state.selectedView === "overzicht") o.classList.add("active");
   el.viewButtons.appendChild(o);
+
+  // Kwalificatie button: only for allround
+  if (state.selectedModule === "allround") {
+    const q = document.createElement("button");
+    q.className = "view-btn";
+    q.innerHTML = `<span class="view-btn__icon">${ICON.qual}</span>Kwalificatie`;
+    q.onclick = () => { state.selectedView = "kwalificatie"; render(); };
+    if (state.selectedView === "kwalificatie") q.classList.add("active");
+    el.viewButtons.appendChild(q);
+  }
 }
 
 // ── Render: H2H Sidebar Form ───────────────────────────
@@ -1515,6 +1661,120 @@ function bindOverzichtEvents() {
   });
 }
 
+// ── Render: Kwalificatie (Allround final distance) ────
+function renderKwalificatieView() {
+  el.viewTitle.textContent = "Kwalificatie slotafstand";
+  el.contentArea.className = "stage__body stage__body--enter";
+
+  if (state.selectedModule !== "allround") {
+    el.contentArea.innerHTML = `<div class="info-box info-box--default">Kwalificatie is alleen van toepassing op NK Allround.</div>`;
+    return;
+  }
+
+  let html = "";
+
+  // Render for both genders
+  const genders = [
+    { key: "v", label: "Vrouwen" },
+    { key: "m", label: "Mannen" },
+  ];
+
+  for (const g of genders) {
+    const cfg = MODULE_CONFIG.allround.genders[g.key];
+    const qualCfg = QUAL_CONFIG.allround[g.key];
+    if (!cfg || !qualCfg) continue;
+
+    // Get standings (from cache or generate)
+    const cacheKey = `allround_${g.key}`;
+    let standings;
+    if (resultsCache[cacheKey]) {
+      standings = resultsCache[cacheKey].standings;
+    } else {
+      const raw = makeMockResults("allround", g.key);
+      standings = computeStandings(raw, cfg.distances);
+      resultsCache[cacheKey] = { raw, standings };
+    }
+
+    // Determine mode: check how many distances have results
+    const completedDists = qualCfg.first3.filter(dk =>
+      standings.all.some(a => Number.isFinite(a.seconds?.[dk]))
+    );
+    let mode, modeLabel;
+    if (completedDists.length >= 3) {
+      mode = "after3"; modeLabel = "Definitief (na 3 afstanden)";
+    } else {
+      mode = "after2"; modeLabel = "Voorlopig (schaduwklassement)";
+    }
+
+    const qual = computeQualification(standings.all, cfg.distances, qualCfg, mode);
+    if (!qual) continue;
+
+    const finalDist = cfg.distances.find(d => d.key === qualCfg.finalDist);
+    const qualDist = cfg.distances.find(d => d.key === qualCfg.qualDist);
+
+    html += `<div class="qual-block">
+      <div class="qual-block__header">
+        <span class="qual-block__title">${esc(g.label)}</span>
+        <span class="qual-block__subtitle">Kwalificatie ${esc(finalDist?.label ?? "")} — ${esc(modeLabel)}</span>
+      </div>`;
+
+    // Info box explaining the rule
+    html += `<div class="info-box info-box--default" style="margin-bottom:16px">
+      Top 8 van zowel het klassement (na ${mode === "after3" ? "3" : "2"} afstanden) als de ${esc(qualDist?.label ?? "")} kwalificeren.
+      Open plekken worden aangevuld vanuit het ${esc(qualDist?.label ?? "")}-klassement.
+    </div>`;
+
+    // Main qualification table
+    const qualifiedDetails = qual.details.filter(d => d.status === "both" || d.status === "dist_swap");
+    const notQualified = qual.details.filter(d => d.status === "klass_only" || d.status === "out");
+
+    html += `<div class="section-label">Gekwalificeerd (${qualifiedDetails.length}/8)</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr>
+          <th>#</th><th>Naam</th><th>Status</th>
+          <th>Klass. positie</th><th>${esc(qualDist?.label ?? "Afstand")} positie</th>
+          <th>${esc(qualDist?.label ?? "Afstand")} tijd</th>
+          <th>Punten</th>
+        </tr></thead>
+        <tbody>${qualifiedDetails.map((d, i) => `<tr class="${d.status === "both" ? "qual-row--both" : "qual-row--swap"}">
+          <td>${rankHtml(i + 1)}</td>
+          <td><span class="athlete-name">${esc(d.name)}</span></td>
+          <td><span class="qual-status qual-status--${esc(d.status)}">${esc(d.reason)}</span></td>
+          <td class="mono">${d.klassRank ?? "—"}</td>
+          <td class="mono">${d.distRank ?? "—"}</td>
+          <td class="mono">${esc(d.distTime)}</td>
+          <td class="mono">${Number.isFinite(d.partialPts) ? d.partialPts.toFixed(3) : "—"}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>`;
+
+    // Not qualified table
+    if (notQualified.length > 0) {
+      html += `<div class="section-label" style="margin-top:20px">Niet gekwalificeerd</div>
+        <div class="table-wrap"><table class="table">
+          <thead><tr>
+            <th>Naam</th><th>Reden</th>
+            <th>Klass. positie</th><th>${esc(qualDist?.label ?? "Afstand")} positie</th>
+            <th>${esc(qualDist?.label ?? "Afstand")} tijd</th>
+            <th>Punten</th>
+          </tr></thead>
+          <tbody>${notQualified.map(d => `<tr class="qual-row--out">
+            <td><span class="athlete-name">${esc(d.name)}</span></td>
+            <td><span class="qual-status qual-status--${esc(d.status)}">${esc(d.reason)}</span></td>
+            <td class="mono">${d.klassRank ?? "—"}</td>
+            <td class="mono">${d.distRank ?? "—"}</td>
+            <td class="mono">${esc(d.distTime)}</td>
+            <td class="mono">${Number.isFinite(d.partialPts) ? d.partialPts.toFixed(3) : "—"}</td>
+          </tr>`).join("")}</tbody>
+        </table></div>`;
+    }
+
+    html += `</div>`; // close qual-block
+  }
+
+  if (el.viewMeta) el.viewMeta.textContent = "NK Allround — Vrouwen & Mannen";
+  el.contentArea.innerHTML = html;
+}
+
 // ── CSV Export ─────────────────────────────────────────
 function exportCSV() {
   const cfg = getActiveConfig();
@@ -1606,6 +1866,7 @@ function render() {
   }
   if (state.selectedView === "headToHead") return renderHeadToHeadView(cfg.distances, state.standings);
   if (state.selectedView === "overzicht") return renderOverzichtView();
+  if (state.selectedView === "kwalificatie") return renderKwalificatieView();
   return renderStandingsView(cfg.distances, state.standings);
 }
 
