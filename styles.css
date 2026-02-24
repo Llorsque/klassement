@@ -434,6 +434,194 @@ code {
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px); background: linear-gradient(135deg, #0062FF 0%, #00C2FF 100%); color: #fff; padding: 10px 24px; border-radius: 999px; font-size: 13px; font-weight: 700; box-shadow: var(--shadow-lg); z-index: 200; pointer-events: none; opacity: 0; transition: transform .35s var(--ease-out), opacity .35s var(--ease-out); }
 .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
 
+/* ── Clickable athlete names ───────────────────────── */
+.athlete-name {
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(255,255,255,.15);
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.athlete-name:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Athlete Popup ─────────────────────────────────── */
+body.popup-open { overflow: hidden; }
+
+.popup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: popupFadeIn .2s ease-out;
+}
+.popup-overlay[hidden] { display: none; }
+
+@keyframes popupFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes popupSlideIn {
+  from { opacity: 0; transform: translateY(16px) scale(.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.popup {
+  position: relative;
+  width: 90%;
+  max-width: 520px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border-mid);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.5);
+  animation: popupSlideIn .25s ease-out;
+}
+
+.popup__close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-mid);
+  font-size: 20px;
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+  z-index: 2;
+}
+.popup__close:hover { background: var(--surface-3); color: #fff; }
+
+.popup__content { padding: 24px; }
+
+/* Popup header */
+.popup-header { margin-bottom: 18px; padding-right: 36px; }
+.popup-header__name {
+  font-size: 20px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.2;
+}
+.popup-header__meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.popup-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.popup-tag--cat {
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border-mid);
+}
+.popup-tag--qual {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(0,194,255,.2);
+}
+
+/* Popup KPI row */
+.popup-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.popup-kpi {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  text-align: center;
+}
+.popup-kpi__label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.popup-kpi__value {
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+}
+.popup-kpi--pb { border-color: rgba(229,62,62,.25); }
+.popup-kpi--pb .popup-kpi__value { color: #FC8181; }
+
+/* Popup section label */
+.popup-section-label {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+/* Upcoming distances */
+.popup-upcoming {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.popup-upcoming__item {
+  display: inline-flex;
+  padding: 5px 12px;
+  border: 1px dashed var(--border-mid);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* Qualification bar */
+.popup-qual-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.popup-qual-bar__label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-dim);
+}
+.popup-qual-bar__value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
 /* ── Responsive ─────────────────────────────────────── */
 @media (max-width: 1024px) {
   .shell { grid-template-columns: 1fr; min-height: auto; }
@@ -460,4 +648,8 @@ code {
   .chip { font-size: 11.5px; padding: 6px 10px; }
   .stage__title { font-size: 18px; }
   .table th, .table td { padding: 9px 10px; }
+  .popup { width: 95%; max-height: 90vh; border-radius: 12px; }
+  .popup__content { padding: 18px; }
+  .popup-kpis { grid-template-columns: repeat(2, 1fr); }
+  .popup-header__name { font-size: 17px; }
 }

@@ -173,6 +173,73 @@ const LIVE_URLS = {
 
 const API_BASE = "https://liveresults.schaatsen.nl";
 
+// ── Participant Registry ──────────────────────────────
+// Source: Deelnemerslijst Daikin - NK Sprint 2026 (24-02-2026)
+const PARTICIPANTS = {
+  sprint: {
+    v: [
+      { nr: 1,  name: "Suzanne Schulting",       cat: "DSA", qual: "EK Sprint" },
+      { nr: 2,  name: "Chloé Hoogendoorn",       cat: "DN3", qual: "EK Sprint" },
+      { nr: 3,  name: "Anna Boersma",             cat: "DSA", qual: "OKT" },
+      { nr: 4,  name: "Isabel Grevelt",           cat: "DSA", qual: "OKT" },
+      { nr: 5,  name: "Naomi Verkerk",            cat: "DSA", qual: "OKT" },
+      { nr: 6,  name: "Angel Daleman",            cat: "DA2", qual: "OKT" },
+      { nr: 7,  name: "Marrit Fledderus",         cat: "DSA", qual: "WC 25/26" },
+      { nr: 8,  name: "Dione Voskamp",            cat: "DSA", qual: "WC 25/26" },
+      { nr: 9,  name: "Pien Smit",                cat: "DN3", qual: "UCB" },
+      { nr: 10, name: "Pien Hersman",             cat: "DN3", qual: "UCB" },
+      { nr: 11, name: "Michelle de Jong",          cat: "DSA", qual: "UCB" },
+      { nr: 12, name: "Sylke Kas",                cat: "DSA", qual: "UCB" },
+      { nr: 13, name: "Amber Duizendstraal",      cat: "DN4", qual: "UCB" },
+      { nr: 14, name: "Henny de Vries",           cat: "DSA", qual: "UCB" },
+      { nr: 15, name: "Myrthe de Boer",           cat: "DSA", qual: "UCB" },
+      { nr: 16, name: "Lotte Groenen",            cat: "DN2", qual: "UCB" },
+      { nr: 17, name: "Elanne de Vries",          cat: "DN1", qual: "UCB" },
+      { nr: 18, name: "Jildou Hoekstra",          cat: "DN3", qual: "UCB" },
+      { nr: 19, name: "Sofie Bouw",               cat: "DN2", qual: "UCB" },
+      { nr: 20, name: "Evy van Zoest",            cat: "DA2", qual: "UCB" },
+    ],
+    m: [
+      { nr: 1,  name: "Merijn Scheperkamp",       cat: "HSA", qual: "EK Sprint" },
+      { nr: 2,  name: "Tim Prins",                cat: "HN3", qual: "EK Sprint" },
+      { nr: 3,  name: "Joep Wennemars",           cat: "HN4", qual: "EK Sprint" },
+      { nr: 4,  name: "Sebas Diniz",              cat: "HSA", qual: "OKT" },
+      { nr: 5,  name: "Kayo Vos",                 cat: "HN4", qual: "OKT" },
+      { nr: 6,  name: "Tijmen Snel",              cat: "HSA", qual: "OKT" },
+      { nr: 7,  name: "Serge Yoro",               cat: "HSA", qual: "OKT" },
+      { nr: 8,  name: "Stefan Westenbroek",       cat: "HSA", qual: "WC 25/26" },
+      { nr: 9,  name: "Kai Verbij",               cat: "HSB", qual: "WC 25/26" },
+      { nr: 10, name: "Wesly Dijs",               cat: "HSA", qual: "WC 25/26" },
+      { nr: 11, name: "Janno Botman",             cat: "HSA", qual: "UCB" },
+      { nr: 12, name: "Mats Siemons",             cat: "HN4", qual: "UCB" },
+      { nr: 13, name: "Niklas Reinders",           cat: "HN2", qual: "UCB" },
+      { nr: 14, name: "Sijmen Egberts",           cat: "HN3", qual: "UCB" },
+      { nr: 15, name: "Mats van den Bos",         cat: "HN2", qual: "UCB" },
+      { nr: 16, name: "Ted Dalrymple",            cat: "HN3", qual: "UCB" },
+      { nr: 17, name: "Jelle Plug",               cat: "HN2", qual: "UCB" },
+      { nr: 18, name: "Johan Talsma",             cat: "HN2", qual: "UCB" },
+      { nr: 19, name: "Pim Stuij",                cat: "HN4", qual: "UCB" },
+      { nr: 20, name: "Max Bergsma",              cat: "HN3", qual: "UCB" },
+    ],
+  },
+  allround: {
+    v: [],
+    m: [],
+  },
+};
+
+// Lookup helper: find participant info by name
+function findParticipant(name) {
+  const n = name.trim().toLowerCase();
+  for (const [mod, genders] of Object.entries(PARTICIPANTS)) {
+    for (const [gen, list] of Object.entries(genders)) {
+      const found = list.find(p => p.name.toLowerCase() === n);
+      if (found) return { ...found, module: mod, gender: gen };
+    }
+  }
+  return null;
+}
+
 // ── Live Data: State ───────────────────────────────────
 let dataSource = "mock"; // "live" | "mock"
 let pollTimer = null;
@@ -336,10 +403,16 @@ async function fetchLiveResults(moduleKey, genderKey) {
     for (const r of results) {
       const nk = normalize(r.name);
       if (!athleteMap.has(nk)) {
+        // Try to find participant info from registry
+        const pInfo = findParticipant(r.name);
         athleteMap.set(nk, {
           athleteId: r.skaterId,
           name: r.name,
-          meta: { club: "—" },
+          meta: {
+            club: pInfo?.cat ?? "—",
+            qual: pInfo?.qual ?? "—",
+            nr: pInfo?.nr ?? null,
+          },
           times: {},
           status: {},
           pb: {},
@@ -368,34 +441,71 @@ async function fetchLiveResults(moduleKey, genderKey) {
 // ── Mock Data ──────────────────────────────────────────
 function makeMockResults(moduleKey, genderKey) {
   const cfg = MODULE_CONFIG[moduleKey].genders[genderKey];
-  const names = {
-    m: ["Rijder A","Rijder B","Rijder C","Rijder D","Rijder E","Rijder F","Rijder G","Rijder H"],
-    v: ["Rijdster A","Rijdster B","Rijdster C","Rijdster D","Rijdster E","Rijdster F","Rijdster G","Rijdster H"],
+  const participants = PARTICIPANTS[moduleKey]?.[genderKey] ?? [];
+
+  // Fallback generic names if no participant registry
+  const fallbackNames = {
+    m: Array.from({length: 20}, (_, i) => `Rijder ${String.fromCharCode(65 + i)}`),
+    v: Array.from({length: 20}, (_, i) => `Rijdster ${String.fromCharCode(65 + i)}`),
   };
-  const presets = {
-    sprint_m: [["34.72","1:09.86","34.81","1:10.11"],["34.90","1:10.32","34.77","1:10.58"],["35.10","1:10.20","35.08","1:10.40"],["34.65","1:10.70","34.92","1:10.88"],["35.30","1:11.10","35.40","1:11.33"],["35.55","1:10.95","35.49","1:11.22"],["34.98","1:10.05","35.01","1:10.25"],["36.10","1:12.20","36.05","1:12.10"]],
-    sprint_v: [["37.88","1:16.40","37.92","1:16.55"],["38.05","1:16.10","38.20","1:16.45"],["38.40","1:17.05","38.15","1:16.88"],["37.70","1:16.80","37.85","1:16.90"],["39.10","1:18.30","39.05","1:18.15"],["38.55","1:17.45","38.50","1:17.32"],["38.20","1:16.95","38.30","1:17.10"],["40.00","1:19.90","40.10","1:20.10"]],
-    allround_m: [["35.10","1:45.80","6:25.10","13:25.20"],["35.40","1:46.10","6:23.90","13:32.00"],["35.00","1:47.30","6:28.20","13:40.50"],["35.90","1:45.40","6:26.10","13:29.80"],["36.10","1:48.00","6:31.40","13:55.00"],["35.60","1:46.50","6:29.90","13:44.30"],["35.20","1:46.80","6:24.80","13:33.10"],["37.20","1:52.00","6:50.00","14:30.00"]],
-    allround_v: [["38.30","1:58.60","4:08.10","7:11.20"],["38.55","1:58.20","4:07.40","7:09.90"],["38.10","1:59.80","4:10.80","7:14.30"],["39.00","1:57.90","4:09.20","7:13.10"],["39.50","2:01.40","4:15.40","7:20.70"],["38.80","1:59.10","4:12.50","7:17.80"],["38.40","1:58.90","4:08.90","7:12.40"],["41.00","2:05.00","4:25.00","7:35.00"]],
+  const names = participants.length > 0
+    ? participants.map(p => p.name)
+    : fallbackNames[genderKey];
+
+  // Seeded time generation: base times per module/gender/distance
+  const baseTimes = {
+    sprint_m:   { d1_500: 34.6, d1_1000: 69.5, d2_500: 34.7, d2_1000: 69.8 },
+    sprint_v:   { d1_500: 37.5, d1_1000: 76.0, d2_500: 37.6, d2_1000: 76.2 },
+    allround_m: { d1_500: 35.0, d1_5000: 384.0, d1_1500: 106.0, d1_10000: 795.0 },
+    allround_v: { d1_500: 38.0, d1_3000: 248.0, d1_1500: 118.0, d1_5000: 431.0 },
   };
-  const rows = presets[`${moduleKey}_${genderKey}`];
-  // PB mock: some athletes get PBs on specific distances for demo
-  const pbPresets = {
-    sprint_m:    [[true,false,false,false],[false,true,false,false],[false,false,true,false],[true,true,false,false],[false,false,false,false],[false,false,false,true],[true,false,true,false],[false,false,false,false]],
-    sprint_v:    [[false,true,false,false],[true,false,false,true],[false,false,false,false],[false,false,true,false],[false,false,false,false],[true,false,false,false],[false,true,false,false],[false,false,false,false]],
-    allround_m:  [[true,false,false,false],[false,false,true,false],[false,true,false,false],[false,false,false,true],[false,false,false,false],[true,false,false,false],[false,false,true,false],[false,false,false,false]],
-    allround_v:  [[false,false,true,false],[true,false,false,false],[false,true,false,false],[false,false,false,false],[false,false,false,false],[false,false,true,false],[true,false,false,true],[false,false,false,false]],
+  const spreads = {
+    sprint_m:   { d1_500: 2.5, d1_1000: 5.0, d2_500: 2.5, d2_1000: 5.0 },
+    sprint_v:   { d1_500: 3.0, d1_1000: 6.0, d2_500: 3.0, d2_1000: 6.0 },
+    allround_m: { d1_500: 3.0, d1_5000: 40.0, d1_1500: 8.0, d1_10000: 90.0 },
+    allround_v: { d1_500: 4.0, d1_3000: 30.0, d1_1500: 10.0, d1_5000: 60.0 },
   };
-  const pbRows = pbPresets[`${moduleKey}_${genderKey}`];
+
+  const key = `${moduleKey}_${genderKey}`;
+  const bt = baseTimes[key] ?? {};
+  const sp = spreads[key] ?? {};
+
+  // Simple seeded pseudo-random per athlete index
+  const seed = (i, d) => {
+    const x = Math.sin(i * 127.1 + d * 311.7 + moduleKey.length * 53) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  // PB: ~25% chance for top-half athletes, ~10% for rest
+  const pbChance = (i) => i < names.length / 2 ? 0.25 : 0.10;
+
   return {
-    athletes: names[genderKey].map((name, idx) => {
+    athletes: names.map((name, idx) => {
       const times = {}, status = {}, pb = {};
-      cfg.distances.forEach((d, i) => {
-        times[d.key] = rows[idx][i] ?? null;
-        status[d.key] = times[d.key] ? "OK" : "DNS";
-        pb[d.key] = pbRows?.[idx]?.[i] ?? false;
+      const participant = participants[idx] ?? null;
+
+      cfg.distances.forEach((d, di) => {
+        const base = bt[d.key] ?? 60;
+        const spread = sp[d.key] ?? 5;
+        // Top seeds get faster times (idx-weighted)
+        const ranking = idx / names.length; // 0..1
+        const noise = seed(idx, di);
+        const sec = base + spread * (ranking * 0.7 + noise * 0.3);
+        times[d.key] = fmtTime(sec);
+        status[d.key] = "OK";
+        pb[d.key] = seed(idx + 100, di) < pbChance(idx);
       });
-      return { athleteId: `a${idx+1}`, name, meta:{ club:"—" }, times, status, pb };
+
+      return {
+        athleteId: `${moduleKey}_${genderKey}_${idx + 1}`,
+        name,
+        meta: {
+          club: participant?.cat ?? "—",
+          qual: participant?.qual ?? "—",
+          nr: participant?.nr ?? null,
+        },
+        times, status, pb,
+      };
     }),
   };
 }
@@ -548,7 +658,7 @@ const el = {};
 function cacheEls() {
   ["moduleTabs","genderTabs","viewButtons","viewTitle","viewMeta","contentArea",
    "h2hRiderA","h2hRiderB","h2hFocusDistance","h2hTargetRider","h2hOpen",
-   "exportBtn","toast"
+   "exportBtn","toast","athletePopup","popupClose","popupContent"
   ].forEach(id => { el[id] = document.getElementById(id); });
 }
 
@@ -586,6 +696,154 @@ function distRankHtml(pos) {
 
 function pbBadge(isPb) {
   return isPb ? ' <span class="pb-badge">PB</span>' : "";
+}
+
+// ── Athlete Popup ─────────────────────────────────────
+function openAthletePopup(athleteName) {
+  // Find athlete in current standings
+  const cfg = getActiveConfig();
+  const standings = state.standings;
+  if (!standings?.all?.length) return;
+
+  const athlete = standings.all.find(a => a.name === athleteName);
+  if (!athlete) return;
+
+  const distances = cfg.distances;
+  const participant = findParticipant(athleteName);
+
+  // Count PBs
+  let pbCount = 0;
+  for (const d of distances) {
+    if (athlete.pb?.[d.key]) pbCount++;
+  }
+
+  // Distances actually skated (have a time)
+  const skated = distances.filter(d => athlete.times?.[d.key] && athlete.status?.[d.key] === "OK");
+
+  // ── Build popup HTML ──
+  let html = "";
+
+  // Header
+  html += `<div class="popup-header">
+    <div class="popup-header__name">${esc(athlete.name)}</div>
+    <div class="popup-header__meta">`;
+  if (participant) {
+    html += `<span class="popup-tag popup-tag--cat">${esc(participant.cat)}</span>`;
+    html += `<span class="popup-tag popup-tag--qual">${esc(participant.qual)}</span>`;
+  } else if (athlete.meta?.club && athlete.meta.club !== "—") {
+    html += `<span class="popup-tag popup-tag--cat">${esc(athlete.meta.club)}</span>`;
+    if (athlete.meta.qual && athlete.meta.qual !== "—") {
+      html += `<span class="popup-tag popup-tag--qual">${esc(athlete.meta.qual)}</span>`;
+    }
+  }
+  html += `</div></div>`;
+
+  // KPI row
+  const rankText = athlete.rank ? `#${athlete.rank}` : "—";
+  const ptsText = Number.isFinite(athlete.totalPoints) ? fmtPts(athlete.totalPoints) : "—";
+  html += `<div class="popup-kpis">
+    <div class="popup-kpi">
+      <div class="popup-kpi__label">Klassement</div>
+      <div class="popup-kpi__value">${rankText}</div>
+    </div>
+    <div class="popup-kpi">
+      <div class="popup-kpi__label">Punten</div>
+      <div class="popup-kpi__value mono">${ptsText}</div>
+    </div>
+    <div class="popup-kpi popup-kpi--pb">
+      <div class="popup-kpi__label">PB's</div>
+      <div class="popup-kpi__value">${pbCount}</div>
+    </div>
+    <div class="popup-kpi">
+      <div class="popup-kpi__label">Gereden</div>
+      <div class="popup-kpi__value">${skated.length} / ${distances.length}</div>
+    </div>
+  </div>`;
+
+  // Results table (only skated distances)
+  if (skated.length > 0) {
+    // Find leader per distance for delta
+    const leaderTimes = {};
+    for (const d of distances) {
+      const best = standings.all
+        .filter(a => Number.isFinite(a.seconds?.[d.key]))
+        .sort((a, b) => a.seconds[d.key] - b.seconds[d.key])[0];
+      leaderTimes[d.key] = best?.seconds?.[d.key] ?? null;
+    }
+
+    html += `<div class="popup-section-label">Resultaten</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>Afstand</th><th>Tijd</th><th>Positie</th><th>Verschil</th></tr></thead>
+        <tbody>${skated.map(d => {
+          const time = athlete.times[d.key];
+          const sec = athlete.seconds?.[d.key];
+          const pos = athlete.distRanks?.[d.key];
+          const isPb = athlete.pb?.[d.key] ?? false;
+          const leader = leaderTimes[d.key];
+          const delta = Number.isFinite(sec) && Number.isFinite(leader) ? sec - leader : null;
+
+          return `<tr class="${pos && pos <= 3 ? podCls(pos) : ""}">
+            <td class="dist-col">${esc(d.label)}</td>
+            <td class="mono">${esc(time)}${pbBadge(isPb)}</td>
+            <td>${pos ? rankHtml(pos) : "—"}</td>
+            <td>${delta === 0 ? '<span class="delta delta--leader">Snelst</span>' : Number.isFinite(delta) ? `<span class="delta">+${fmtTimePrecise(delta).slice(1)}</span>` : ""}</td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table></div>`;
+  }
+
+  // Not yet skated distances
+  const notSkated = distances.filter(d => !skated.includes(d));
+  if (notSkated.length > 0) {
+    html += `<div class="popup-section-label" style="margin-top:14px">Nog te rijden</div>
+      <div class="popup-upcoming">${notSkated.map(d => 
+        `<span class="popup-upcoming__item">${esc(d.label)}</span>`
+      ).join("")}</div>`;
+  }
+
+  // Qualification info
+  if (participant) {
+    html += `<div class="popup-qual-bar">
+      <span class="popup-qual-bar__label">Kwalificatie</span>
+      <span class="popup-qual-bar__value">${esc(participant.qual)}</span>
+    </div>`;
+  }
+
+  el.popupContent.innerHTML = html;
+  el.athletePopup.hidden = false;
+  document.body.classList.add("popup-open");
+}
+
+function closeAthletePopup() {
+  if (el.athletePopup) {
+    el.athletePopup.hidden = true;
+    document.body.classList.remove("popup-open");
+  }
+}
+
+function initPopupHandlers() {
+  // Close button
+  el.popupClose?.addEventListener("click", closeAthletePopup);
+
+  // Click overlay background to close
+  el.athletePopup?.addEventListener("click", (e) => {
+    if (e.target === el.athletePopup) closeAthletePopup();
+  });
+
+  // Escape key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeAthletePopup();
+  });
+
+  // Event delegation: click any .athlete-name in contentArea
+  document.addEventListener("click", (e) => {
+    const nameEl = e.target.closest(".athlete-name");
+    if (nameEl) {
+      e.preventDefault();
+      const name = nameEl.textContent.trim();
+      if (name && name !== "—") openAthletePopup(name);
+    }
+  });
 }
 
 // ── Render: Meta ───────────────────────────────────────
@@ -1285,6 +1543,7 @@ async function loadAndRender() {
 async function boot() {
   cacheEls();
   bindEvents();
+  initPopupHandlers();
   await loadAndRender();
 }
 
