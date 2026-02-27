@@ -419,7 +419,7 @@ function findParticipant(name) {
 }
 
 // ── Live Data: State ───────────────────────────────────
-let dataSource = "mock"; // "live" | "mock"
+let dataSource = "waiting"; // "live" | "waiting"
 let pollTimer = null;
 const POLL_INTERVAL = 2_000; // 2 seconds
 let lastFetchLog = [];
@@ -616,71 +616,31 @@ async function fetchLiveResults(moduleKey, genderKey) {
   return { athletes: [...athleteMap.values()] };
 }
 
-// ── Mock Data ──────────────────────────────────────────
-function makeMockResults(moduleKey, genderKey) {
+// ── Participant Baseline (no times — waiting for live data) ─
+function makeParticipantBaseline(moduleKey, genderKey) {
   const cfg = MODULE_CONFIG[moduleKey].genders[genderKey];
   const participants = PARTICIPANTS[moduleKey]?.[genderKey] ?? [];
 
-  // Fallback generic names if no participant registry
-  const fallbackNames = {
-    m: Array.from({length: 20}, (_, i) => `Rijder ${String.fromCharCode(65 + i)}`),
-    v: Array.from({length: 20}, (_, i) => `Rijdster ${String.fromCharCode(65 + i)}`),
-  };
-  const names = participants.length > 0
-    ? participants.map(p => p.name)
-    : fallbackNames[genderKey];
-
-  // Seeded time generation: base times per module/gender/distance
-  const baseTimes = {
-    sprint_m:   { d1_500: 34.6, d1_1000: 69.5, d2_500: 34.7, d2_1000: 69.8 },
-    sprint_v:   { d1_500: 37.5, d1_1000: 76.0, d2_500: 37.6, d2_1000: 76.2 },
-    allround_m: { d1_500: 35.0, d1_5000: 384.0, d1_1500: 106.0, d1_10000: 795.0 },
-    allround_v: { d1_500: 38.0, d1_3000: 248.0, d1_1500: 118.0, d1_5000: 431.0 },
-  };
-  const spreads = {
-    sprint_m:   { d1_500: 2.5, d1_1000: 5.0, d2_500: 2.5, d2_1000: 5.0 },
-    sprint_v:   { d1_500: 3.0, d1_1000: 6.0, d2_500: 3.0, d2_1000: 6.0 },
-    allround_m: { d1_500: 3.0, d1_5000: 40.0, d1_1500: 8.0, d1_10000: 90.0 },
-    allround_v: { d1_500: 4.0, d1_3000: 30.0, d1_1500: 10.0, d1_5000: 60.0 },
-  };
-
-  const key = `${moduleKey}_${genderKey}`;
-  const bt = baseTimes[key] ?? {};
-  const sp = spreads[key] ?? {};
-
-  // Simple seeded pseudo-random per athlete index
-  const seed = (i, d) => {
-    const x = Math.sin(i * 127.1 + d * 311.7 + moduleKey.length * 53) * 43758.5453;
-    return x - Math.floor(x);
-  };
-
-  // PB: ~25% chance for top-half athletes, ~10% for rest
-  const pbChance = (i) => i < names.length / 2 ? 0.25 : 0.10;
+  if (participants.length === 0) {
+    return { athletes: [] };
+  }
 
   return {
-    athletes: names.map((name, idx) => {
+    athletes: participants.map((p, idx) => {
       const times = {}, status = {}, pb = {};
-      const participant = participants[idx] ?? null;
-
-      cfg.distances.forEach((d, di) => {
-        const base = bt[d.key] ?? 60;
-        const spread = sp[d.key] ?? 5;
-        // Top seeds get faster times (idx-weighted)
-        const ranking = idx / names.length; // 0..1
-        const noise = seed(idx, di);
-        const sec = base + spread * (ranking * 0.7 + noise * 0.3);
-        times[d.key] = fmtTime(sec);
-        status[d.key] = "OK";
-        pb[d.key] = seed(idx + 100, di) < pbChance(idx);
+      cfg.distances.forEach(d => {
+        times[d.key] = null;
+        status[d.key] = "DNS";
+        pb[d.key] = false;
       });
 
       return {
         athleteId: `${moduleKey}_${genderKey}_${idx + 1}`,
-        name,
+        name: p.name,
         meta: {
-          club: participant?.cat ?? "—",
-          qual: participant?.qual ?? "—",
-          nr: participant?.nr ?? null,
+          club: p.cat,
+          qual: p.qual,
+          nr: p.nr,
         },
         times, status, pb,
       };
@@ -695,23 +655,56 @@ const resultsCache = {}; // key: "sprint_m" etc → { raw, standings }
 async function loadData() {
   const m = state.selectedModule;
   const g = state.selectedGender;
+  const cfg = getActiveConfig();
 
-  // Try live first
+  // 1. Start with participant baseline (all names, no times)
+  const baseline = makeParticipantBaseline(m, g);
+  const normalize = (n) => n.trim().toLowerCase();
+
+  // 2. Try fetching live data
   const liveData = await fetchLiveResults(m, g);
+
   if (liveData && liveData.athletes.length > 0) {
-    state.resultsRaw = liveData;
+    // 3. Merge live data onto participant baseline
+    const liveMap = new Map();
+    for (const la of liveData.athletes) {
+      liveMap.set(normalize(la.name), la);
+    }
+
+    // Update baseline athletes with live times
+    for (const ba of baseline.athletes) {
+      const live = liveMap.get(normalize(ba.name));
+      if (live) {
+        // Merge times, status, pb from live onto participant
+        for (const d of cfg.distances) {
+          if (live.times?.[d.key]) {
+            ba.times[d.key] = live.times[d.key];
+            ba.status[d.key] = live.status?.[d.key] ?? "OK";
+            ba.pb[d.key] = live.pb?.[d.key] ?? false;
+          }
+        }
+        liveMap.delete(normalize(ba.name)); // consumed
+      }
+    }
+
+    // Any live athletes NOT in participant list? Ignore them (participant list is truth).
+    // But log for debugging.
+    if (liveMap.size > 0) {
+      console.log("[Klassement] Live athletes not in participant list (ignored):",
+        [...liveMap.values()].map(a => a.name));
+    }
+
     dataSource = "live";
-    console.log("[Klassement] Live data loaded", lastFetchLog);
+    console.log("[Klassement] Live data merged", lastFetchLog);
   } else {
-    // Fallback to mock
-    state.resultsRaw = makeMockResults(m, g);
-    dataSource = "mock";
+    dataSource = "waiting";
     if (lastFetchLog.length > 0) {
-      console.log("[Klassement] Live fetch attempted but failed, using mock data", lastFetchLog);
+      console.log("[Klassement] No live data yet, showing participant list", lastFetchLog);
     }
   }
-  state.standings = computeStandings(state.resultsRaw, getActiveConfig().distances);
-  // Cache for Overzicht cross-module use
+
+  state.resultsRaw = baseline;
+  state.standings = computeStandings(state.resultsRaw, cfg.distances);
   resultsCache[`${m}_${g}`] = { raw: state.resultsRaw, standings: state.standings };
   updateStatusBadge();
 }
@@ -724,7 +717,7 @@ function updateStatusBadge() {
     badge.classList.add("status-badge--live");
     badge.classList.remove("status-badge--mock");
   } else {
-    badge.innerHTML = '<span class="status-badge__pulse"></span>Mockdata';
+    badge.innerHTML = '<span class="status-badge__pulse"></span>Wachten op data';
     badge.classList.remove("status-badge--live");
     badge.classList.add("status-badge--mock");
   }
@@ -1077,15 +1070,13 @@ function renderViewButtons(distances) {
   if (state.selectedView === "overzicht") o.classList.add("active");
   el.viewButtons.appendChild(o);
 
-  // Kwalificatie button: only for allround
-  if (state.selectedModule === "allround") {
-    const q = document.createElement("button");
-    q.className = "view-btn";
-    q.innerHTML = `<span class="view-btn__icon">${ICON.qual}</span>Kwalificatie`;
-    q.onclick = () => { state.selectedView = "kwalificatie"; render(); };
-    if (state.selectedView === "kwalificatie") q.classList.add("active");
-    el.viewButtons.appendChild(q);
-  }
+  // Kwalificatie button: always visible (shows allround qualification for both genders)
+  const q = document.createElement("button");
+  q.className = "view-btn";
+  q.innerHTML = `<span class="view-btn__icon">${ICON.qual}</span>Kwalificatie`;
+  q.onclick = () => { state.selectedView = "kwalificatie"; render(); };
+  if (state.selectedView === "kwalificatie") q.classList.add("active");
+  el.viewButtons.appendChild(q);
 }
 
 // ── Render: H2H Sidebar Form ───────────────────────────
@@ -1218,7 +1209,7 @@ function renderStandingsView(distances, standings) {
       <strong>Leeswijzer:</strong> De tijden zijn de werkelijke wedstrijdtijden.
       Punten = tijd ÷ (meters ÷ 500), afgekapt op 3 decimalen. Laagste totaal = leider.
       Achterstand toont hoeveel seconden je sneller moet rijden op de gekozen afstand om de leider in te halen.
-      ${dataSource === "live" ? "<br><strong>Databron:</strong> liveresults.schaatsen.nl — automatisch bijgewerkt elke 2 sec." : "<br><strong>Databron:</strong> Mockdata (geen live verbinding beschikbaar)."}
+      ${dataSource === "live" ? "<br><strong>Databron:</strong> liveresults.schaatsen.nl — automatisch bijgewerkt elke 2 sec." : "<br><strong>Databron:</strong> Wachten op live data van liveresults.schaatsen.nl."}
     </div>`;
 
   // Bind inline distance picker
@@ -1395,12 +1386,12 @@ function gatherOverzichtData() {
     const cfg = MODULE_CONFIG[mod]?.genders?.[gen];
     if (!cfg) continue;
 
-    // Use cache if available (has real/live data), otherwise generate mock
+    // Use cache if available, otherwise generate participant baseline
     let st;
     if (resultsCache[key]) {
       st = resultsCache[key].standings;
     } else {
-      const raw = makeMockResults(mod, gen);
+      const raw = makeParticipantBaseline(mod, gen);
       st = computeStandings(raw, cfg.distances);
       resultsCache[key] = { raw, standings: st };
     }
@@ -1666,11 +1657,6 @@ function renderKwalificatieView() {
   el.viewTitle.textContent = "Kwalificatie slotafstand";
   el.contentArea.className = "stage__body stage__body--enter";
 
-  if (state.selectedModule !== "allround") {
-    el.contentArea.innerHTML = `<div class="info-box info-box--default">Kwalificatie is alleen van toepassing op NK Allround.</div>`;
-    return;
-  }
-
   let html = "";
 
   // Render for both genders
@@ -1690,7 +1676,7 @@ function renderKwalificatieView() {
     if (resultsCache[cacheKey]) {
       standings = resultsCache[cacheKey].standings;
     } else {
-      const raw = makeMockResults("allround", g.key);
+      const raw = makeParticipantBaseline("allround", g.key);
       standings = computeStandings(raw, cfg.distances);
       resultsCache[cacheKey] = { raw, standings };
     }
@@ -1836,7 +1822,10 @@ function bindEvents() {
 }
 
 function resetViewState() {
-  state.selectedView = "klassement";
+  // Keep kwalificatie view when switching module/gender (it's standalone)
+  if (state.selectedView !== "kwalificatie") {
+    state.selectedView = "klassement";
+  }
   state.selectedDistanceKey = null;
   state.nextDistKey = null;
   state.h2h.riderAId = null;
