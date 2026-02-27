@@ -338,7 +338,7 @@ const PARTICIPANTS = {
     m: [
       { nr: 1,  name: "Merijn Scheperkamp",       cat: "HSA", qual: "EK Sprint" },
       { nr: 2,  name: "Tim Prins",                cat: "HN3", qual: "EK Sprint" },
-      { nr: 3,  name: "Joep Wennemars",           cat: "HN4", qual: "EK Sprint" },
+      { nr: 3,  name: "Arjen Boersma",            cat: "HA2", qual: "UCB" },
       { nr: 4,  name: "Sebas Diniz",              cat: "HSA", qual: "OKT" },
       { nr: 5,  name: "Kayo Vos",                 cat: "HN4", qual: "OKT" },
       { nr: 6,  name: "Tijmen Snel",              cat: "HSA", qual: "OKT" },
@@ -383,7 +383,7 @@ const PARTICIPANTS = {
     ],
     m: [
       { nr: 1,  name: "Beau Snellink",             cat: "HSA", qual: "EK Allround" },
-      { nr: 2,  name: "Chris Huizinga",            cat: "HSA", qual: "EK Allround" },
+      { nr: 2,  name: "Loek van Vilsteren",       cat: "HN3", qual: "Eindhoven Trofee" },
       { nr: 3,  name: "Marcel Bosker",             cat: "HSA", qual: "EK Allround" },
       { nr: 4,  name: "Jasper Krommenhoek",        cat: "HN3", qual: "EK Allround" },
       { nr: 5,  name: "Jur Veenje",                cat: "HSA", qual: "Gruno Bokaal" },
@@ -420,9 +420,9 @@ function findParticipant(name) {
 
 // ── Startlists (pair order per distance) ──────────────
 // Ordered array of names. Index 0,1 = pair 1; 2,3 = pair 2; etc.
-// Populated from liveresults.schaatsen.nl startlists.
+// Source: Sportity / KNSB official lotingen, 27-02-2026
 const STARTLISTS = {
-  // NK Allround Vrouwen
+  // ── NK Allround Vrouwen ──
   allround_v_d1_500: [
     "Sanne in 't Hof", "Lieke Huizink",
     "Maud Blokhorst", "Tosca Mulder",
@@ -435,8 +435,95 @@ const STARTLISTS = {
     "Melissa Wijfje", "Gioya Lancee",
     "Meike Veen", "Marijke Groenewoud",
   ],
-  // Add more startlists as they become available from liveresults.schaatsen.nl
-  // Format: `${module}_${gender}_${distKey}`: ["name1inner", "name1outer", "name2inner", "name2outer", ...]
+  allround_v_d1_3000: [
+    "Britt Breider", "Amy van der Meer",
+    "Tosca Mulder", "Maud Blokhorst",
+    "Nynke Tinga", "Evi de Ruijter",
+    "Naomi van der Werf", "Sanne Westra",
+    "Rosalie van Vliet", "Leonie Bats",
+    "Lieke Huizink", "Kim Talsma",
+    "Jade Groenewoud", "Meike Veen",
+    "Gioya Lancee", "Evelien Vijn",
+    "Marijke Groenewoud", "Merel Conijn",
+    "Melissa Wijfje", "Sanne in 't Hof",
+  ],
+  // ── NK Allround Mannen ──
+  allround_m_d1_500: [
+    "Jorrit Bergsma", "Mathijs van Zwieten",
+    "Jasper Krommenhoek", "Chris Brommersma",
+    "Pelle Bolsius", "Kars Jansman",
+    "Michiel de Groot", "Remco Stam",
+    "Remo Slotegraaf", "Beau Snellink",
+    "Jelle Koeleman", "Edsger van Felius",
+    "Yves Vergeer", "Niels van Reeuwijk",
+    "Marcel Bosker", "Louis Hollaar",
+    "Loek van Vilsteren", "Ties van Seumeren",
+    "Hidde Westra", "Jur Veenje",
+  ],
+  allround_m_d1_5000: [
+    "Loek van Vilsteren", "Edsger van Felius",
+    "Mathijs van Zwieten", "Michiel de Groot",
+    "Hidde Westra", "Pelle Bolsius",
+    "Niels van Reeuwijk", "Ties van Seumeren",
+    "Jelle Koeleman", "Jur Veenje",
+    "Chris Brommersma", "Louis Hollaar",
+    "Yves Vergeer", "Remo Slotegraaf",
+    "Beau Snellink", "Jorrit Bergsma",
+    "Kars Jansman", "Jasper Krommenhoek",
+    "Marcel Bosker", "Remco Stam",
+  ],
+  // ── NK Sprint Vrouwen ──
+  sprint_v_d1_500: [
+    "Evy van Zoest", "Sofie Bouw",
+    "Sylke Kas", "Elanne de Vries",
+    "Lotte Groenen", "Henny de Vries",
+    "Myrthe de Boer", "Jildou Hoekstra",
+    "Amber Duizendstraal", "Naomi Verkerk",
+    "Michelle de Jong", "Pien Hersman",
+    "Chloé Hoogendoorn", "Pien Smit",
+    "Isabel Grevelt", "Suzanne Schulting",
+    "Anna Boersma", "Angel Daleman",
+    "Marrit Fledderus", "Dione Voskamp",
+  ],
+  sprint_v_d1_1000: [
+    "Sofie Bouw", "Jildou Hoekstra",
+    "Sylke Kas", "Henny de Vries",
+    "Lotte Groenen", "Amber Duizendstraal",
+    "Elanne de Vries", "Evy van Zoest",
+    "Pien Smit", "Anna Boersma",
+    "Michelle de Jong", "Myrthe de Boer",
+    "Pien Hersman", "Dione Voskamp",
+    "Marrit Fledderus", "Angel Daleman",
+    "Naomi Verkerk", "Suzanne Schulting",
+    "Isabel Grevelt", "Chloé Hoogendoorn",
+  ],
+  // ── NK Sprint Mannen ──
+  sprint_m_d1_500: [
+    "Jelle Plug", "Arjen Boersma",
+    "Pim Stuij", "Sijmen Egberts",
+    "Niklas Reinders", "Ted Dalrymple",
+    "Wesly Dijs", "Max Bergsma",
+    "Serge Yoro", "Kai Verbij",
+    "Mats Siemons", "Kayo Vos",
+    "Tijmen Snel", "Johan Talsma",
+    "Tim Prins", "Mats van den Bos",
+    "Janno Botman", "Merijn Scheperkamp",
+    "Sebas Diniz", "Stefan Westenbroek",
+  ],
+  sprint_m_d1_1000: [
+    "Max Bergsma", "Johan Talsma",
+    "Pim Stuij", "Sebas Diniz",
+    "Niklas Reinders", "Jelle Plug",
+    "Arjen Boersma", "Ted Dalrymple",
+    "Sijmen Egberts", "Janno Botman",
+    "Mats van den Bos", "Mats Siemons",
+    "Stefan Westenbroek", "Kai Verbij",
+    "Merijn Scheperkamp", "Wesly Dijs",
+    "Tim Prins", "Serge Yoro",
+    "Tijmen Snel", "Kayo Vos",
+  ],
+  // Day 2 startlists (1500m allround, 2e 500/1000 sprint) will be
+  // auto-captured from liveresults.schaatsen.nl API when available
 };
 
 // Get startlist for a specific distance
