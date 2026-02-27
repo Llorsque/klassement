@@ -476,6 +476,44 @@ code {
   border-bottom-color: var(--accent);
 }
 
+/* ── Pair numbers & pending rows (startlist) ───────── */
+.pair-nr {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.pair-nr--none { opacity: .4; }
+
+.row--pending td { opacity: .6; }
+.row--pending:hover td { opacity: .85; }
+
+.table-sep td {
+  padding: 6px 14px !important;
+  border-bottom: none !important;
+}
+.table-sep__label {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-dim);
+  padding: 3px 10px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
 /* ── Athlete Popup ─────────────────────────────────── */
 body.popup-open { overflow: hidden; }
 

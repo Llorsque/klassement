@@ -363,7 +363,7 @@ const PARTICIPANTS = {
       { nr: 1,  name: "Merel Conijn",              cat: "DSA", qual: "EK Allround" },
       { nr: 2,  name: "Marijke Groenewoud",         cat: "DSA", qual: "EK Allround" },
       { nr: 3,  name: "Jade Groenewoud",            cat: "DN3", qual: "Gruno Bokaal" },
-      { nr: 4,  name: "Reina Anema",               cat: "DSB", qual: "Gruno Bokaal" },
+      { nr: 4,  name: "Maud Blokhorst",            cat: "DA1", qual: "Kraantje Lek" },
       { nr: 5,  name: "Evelien Vijn",              cat: "DN4", qual: "Gruno Bokaal" },
       { nr: 6,  name: "Naomi van der Werf",        cat: "DSA", qual: "Gruno Bokaal" },
       { nr: 7,  name: "Nynke Tinga",               cat: "DN1", qual: "Gruno Bokaal" },
@@ -416,6 +416,41 @@ function findParticipant(name) {
     }
   }
   return null;
+}
+
+// ── Startlists (pair order per distance) ──────────────
+// Ordered array of names. Index 0,1 = pair 1; 2,3 = pair 2; etc.
+// Populated from liveresults.schaatsen.nl startlists.
+const STARTLISTS = {
+  // NK Allround Vrouwen
+  allround_v_d1_500: [
+    "Sanne in 't Hof", "Lieke Huizink",
+    "Maud Blokhorst", "Tosca Mulder",
+    "Evelien Vijn", "Naomi van der Werf",
+    "Britt Breider", "Evi de Ruijter",
+    "Kim Talsma", "Sanne Westra",
+    "Leonie Bats", "Merel Conijn",
+    "Rosalie van Vliet", "Nynke Tinga",
+    "Jade Groenewoud", "Amy van der Meer",
+    "Melissa Wijfje", "Gioya Lancee",
+    "Meike Veen", "Marijke Groenewoud",
+  ],
+  // Add more startlists as they become available from liveresults.schaatsen.nl
+  // Format: `${module}_${gender}_${distKey}`: ["name1inner", "name1outer", "name2inner", "name2outer", ...]
+};
+
+// Get startlist for a specific distance
+function getStartlist(moduleKey, genderKey, distKey) {
+  return STARTLISTS[`${moduleKey}_${genderKey}_${distKey}`] ?? null;
+}
+
+// Get pair number for an athlete in a startlist (1-based)
+function getPairNumber(startlist, name) {
+  if (!startlist) return null;
+  const n = name.trim().toLowerCase();
+  const idx = startlist.findIndex(s => s.toLowerCase() === n);
+  if (idx === -1) return null;
+  return Math.floor(idx / 2) + 1;
 }
 
 // ── Live Data: State ───────────────────────────────────
@@ -571,6 +606,16 @@ async function fetchLiveResults(moduleKey, genderKey) {
 
   const allResults = await Promise.all(fetches);
   if (!anySuccess) return null;
+
+  // Capture startlist order from API (API returns names in startlist/pair order)
+  for (const { key, results } of allResults) {
+    if (!results || results.length === 0) continue;
+    const slKey = `${moduleKey}_${genderKey}_${key}`;
+    // Only set if we don't already have a hardcoded startlist, or API has data
+    if (!STARTLISTS[slKey]) {
+      STARTLISTS[slKey] = results.map(r => r.name);
+    }
+  }
 
   // Merge: build athlete map across all distances
   const athleteMap = new Map(); // keyed by name (normalized)
@@ -1100,47 +1145,97 @@ function renderH2HForm(cfg, standings) {
 
 // ── Render: Distance View ──────────────────────────────
 function renderDistanceView(dist, standings) {
-  const rows = standings.all
-    .map(a => ({
-      name: a.name,
-      time: a.times?.[dist.key] ?? "—",
-      sec: a.seconds?.[dist.key] ?? null,
-      pts: a.points?.[dist.key] ?? null,
-      st: a.status?.[dist.key] ?? "—",
-      isPb: a.pb?.[dist.key] ?? false,
-    }))
-    .sort((a, b) => {
-      if ((a.st === "OK") !== (b.st === "OK")) return a.st === "OK" ? -1 : 1;
-      if (!Number.isFinite(a.sec) || !Number.isFinite(b.sec)) return 0;
-      return a.sec - b.sec;
-    });
+  el.viewTitle.textContent = dist.label;
+  el.contentArea.className = "stage__body stage__body--enter";
 
-  const fast = rows[0]?.sec ?? null;
-  rows.forEach(r => {
+  const startlist = getStartlist(state.selectedModule, state.selectedGender, dist.key);
+
+  // Split athletes: those with results vs those without
+  const withTime = [];
+  const withoutTime = [];
+
+  for (const a of standings.all) {
+    const t = a.times?.[dist.key];
+    const sec = a.seconds?.[dist.key];
+    const st = a.status?.[dist.key] ?? "DNS";
+    const isPb = a.pb?.[dist.key] ?? false;
+
+    if (t && st === "OK" && Number.isFinite(sec)) {
+      withTime.push({ name: a.name, time: t, sec, st, isPb });
+    } else {
+      withoutTime.push({ name: a.name, time: "—", sec: null, st, isPb: false });
+    }
+  }
+
+  // Sort finished by time (fastest first)
+  withTime.sort((a, b) => a.sec - b.sec);
+
+  const fast = withTime[0]?.sec ?? null;
+  withTime.forEach((r, i) => {
+    r.rank = i + 1;
     r.timeDelta = Number.isFinite(r.sec) && Number.isFinite(fast) ? r.sec - fast : null;
   });
 
-  el.viewTitle.textContent = dist.label;
-  el.contentArea.className = "stage__body stage__body--enter";
+  const hasResults = withTime.length > 0;
+
+  // Sort unfinished by startlist pair order (if available), otherwise keep original order
+  if (startlist) {
+    const orderMap = new Map();
+    startlist.forEach((name, idx) => orderMap.set(name.toLowerCase(), idx));
+    withoutTime.sort((a, b) => {
+      const oa = orderMap.get(a.name.toLowerCase()) ?? 999;
+      const ob = orderMap.get(b.name.toLowerCase()) ?? 999;
+      return oa - ob;
+    });
+  }
+
+  // Build table rows
+  let rowsHtml = "";
+
+  // 1. Finished athletes (with ranking)
+  for (const r of withTime) {
+    const deltaStr = r.timeDelta === 0
+      ? '<span class="delta delta--leader">Snelst</span>'
+      : Number.isFinite(r.timeDelta)
+        ? `<span class="delta">${fmtTimePrecise(r.timeDelta)}</span>`
+        : "";
+
+    rowsHtml += `<tr class="${podCls(r.rank)}">
+      <td>${rankHtml(r.rank)}</td>
+      <td><span class="athlete-name">${esc(r.name)}</span></td>
+      <td class="mono">${esc(r.time)}${pbBadge(r.isPb)}</td>
+      <td>${deltaStr}</td>
+    </tr>`;
+  }
+
+  // 2. Separator if there are both finished and unfinished
+  if (hasResults && withoutTime.length > 0) {
+    rowsHtml += `<tr class="table-sep"><td colspan="4"><span class="table-sep__label">Nog te rijden</span></td></tr>`;
+  }
+
+  // 3. Unfinished athletes (with pair numbers from startlist)
+  for (const r of withoutTime) {
+    const pair = getPairNumber(startlist, r.name);
+    const pairHtml = pair !== null
+      ? `<span class="pair-nr">${pair}</span>`
+      : `<span class="pair-nr pair-nr--none">—</span>`;
+
+    rowsHtml += `<tr class="row--pending">
+      <td>${pairHtml}</td>
+      <td><span class="athlete-name">${esc(r.name)}</span></td>
+      <td class="mono">—</td>
+      <td></td>
+    </tr>`;
+  }
+
+  // Header label for # column
+  const colLabel = hasResults ? "#" : "Rit";
+
   el.contentArea.innerHTML = `
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>#</th><th>Naam</th><th>Tijd</th><th>Achterstand</th><th>Status</th></tr></thead>
-        <tbody>${rows.map((r, i) => {
-          const rk = i + 1;
-          const deltaStr = r.timeDelta === 0
-            ? '<span class="delta delta--leader">Snelst</span>'
-            : Number.isFinite(r.timeDelta)
-              ? `<span class="delta">${fmtTimePrecise(r.timeDelta)}</span>`
-              : "";
-          return `<tr class="${podCls(rk)}">
-            <td>${rankHtml(rk)}</td>
-            <td><span class="athlete-name">${esc(r.name)}</span></td>
-            <td class="mono">${esc(r.time)}${pbBadge(r.isPb)}</td>
-            <td>${deltaStr}</td>
-            <td>${stHtml(r.st)}</td>
-          </tr>`;
-        }).join("")}</tbody>
+        <thead><tr><th>${colLabel}</th><th>Naam</th><th>Tijd</th><th>Verschil</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
       </table>
     </div>`;
 }
