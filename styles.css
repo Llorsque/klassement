@@ -514,6 +514,68 @@ code {
   border: 1px solid var(--border);
 }
 
+/* ── Distance split layout (startlist + sidebar) ───── */
+.dist-split {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
+  align-items: start;
+}
+.dist-split__main { min-width: 0; }
+.dist-split__sidebar { position: sticky; top: 16px; }
+
+/* ── Compact Klassement Sidebar ────────────────────── */
+.klass-sidebar {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.klass-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 4px;
+}
+.klass-sidebar__title {
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #fff;
+}
+.klass-sidebar__status {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--accent);
+  background: rgba(0,194,255,.08);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.klass-sidebar__sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 0 14px 8px;
+  font-weight: 500;
+}
+.klass-sidebar__empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* Compact table inside sidebar */
+.table--compact { font-size: 12px; }
+.table--compact th { font-size: 10px; padding: 6px 8px; }
+.table--compact td { padding: 5px 8px; }
+.klass-sidebar__rank { font-weight: 700; color: var(--text-dim); width: 28px; }
+.klass-sidebar__name { font-size: 12px; }
+.klass-sidebar__pts { font-size: 11px; white-space: nowrap; }
+.klass-sidebar__delta { font-size: 11px; white-space: nowrap; }
+
 /* ── Athlete Popup ─────────────────────────────────── */
 body.popup-open { overflow: hidden; }
 
@@ -757,6 +819,7 @@ body.popup-open { overflow: hidden; }
   .view-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
   .view-btn.active::before { display: none; }
   .stage__body { padding: 20px; }
+  .dist-split { grid-template-columns: 1fr 280px; gap: 16px; }
 }
 @media (max-width: 768px) {
   .topbar__inner { flex-wrap: wrap; gap: 10px; padding: 10px 16px; }
@@ -770,6 +833,8 @@ body.popup-open { overflow: hidden; }
   .mirror-header__rider { padding: 12px 14px; font-size: 13px; }
   .mirror-cell { padding: 9px 14px; font-size: 12px; }
   .mirror-center { min-width: 90px; padding: 9px 10px; }
+  .dist-split { grid-template-columns: 1fr; }
+  .dist-split__sidebar { position: static; }
 }
 @media (max-width: 480px) {
   .chip { font-size: 11.5px; padding: 6px 10px; }

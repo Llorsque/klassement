@@ -1235,6 +1235,7 @@ function renderDistanceView(dist, standings) {
   el.viewTitle.textContent = dist.label;
   el.contentArea.className = "stage__body stage__body--enter";
 
+  const cfg = getActiveConfig();
   const startlist = getStartlist(state.selectedModule, state.selectedGender, dist.key);
 
   // Split athletes: those with results vs those without
@@ -1318,12 +1319,123 @@ function renderDistanceView(dist, standings) {
   // Header label for # column
   const colLabel = hasResults ? "#" : "Rit";
 
+  // Build compact klassement sidebar
+  const sidebarHtml = buildCompactKlassement(cfg.distances, standings);
+
   el.contentArea.innerHTML = `
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>${colLabel}</th><th>Naam</th><th>Tijd</th><th>Verschil</th></tr></thead>
-        <tbody>${rowsHtml}</tbody>
-      </table>
+    <div class="dist-split">
+      <div class="dist-split__main">
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>${colLabel}</th><th>Naam</th><th>Tijd</th><th>Verschil</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="dist-split__sidebar">
+        ${sidebarHtml}
+      </div>
+    </div>`;
+}
+
+// ── Compact Klassement Sidebar ────────────────────────
+// Shows: rank, name, total points, delta as time on next distance
+function buildCompactKlassement(distances, standings) {
+  // Determine next distance to skate:
+  // = first distance (in skating order) where nobody has a result yet
+  let nextDist = null;
+  for (const d of distances) {
+    const anyResult = standings.all.some(a =>
+      a.times?.[d.key] && a.status?.[d.key] === "OK"
+    );
+    if (!anyResult) { nextDist = d; break; }
+  }
+  // If all distances completed, use last distance
+  if (!nextDist) nextDist = distances[distances.length - 1];
+
+  const leader = standings.full[0]?.totalPoints ?? null;
+
+  // Ranked athletes (have at least partial points)
+  const ranked = standings.all
+    .filter(a => a.completedCount > 0)
+    .sort((a, b) => {
+      // Full klassement first, then partial
+      if (a.totalPoints !== null && b.totalPoints !== null) return a.totalPoints - b.totalPoints;
+      if (a.totalPoints !== null) return -1;
+      if (b.totalPoints !== null) return 1;
+      // Both partial: sum whatever points they have
+      const sumA = Object.values(a.points ?? {}).filter(Number.isFinite).reduce((s, v) => s + v, 0);
+      const sumB = Object.values(b.points ?? {}).filter(Number.isFinite).reduce((s, v) => s + v, 0);
+      return sumA - sumB;
+    });
+
+  // If no one has skated yet, show placeholder
+  if (ranked.length === 0) {
+    return `
+      <div class="klass-sidebar">
+        <div class="klass-sidebar__header">
+          <span class="klass-sidebar__title">Live Klassement</span>
+        </div>
+        <div class="klass-sidebar__empty">Nog geen resultaten</div>
+      </div>`;
+  }
+
+  // Determine partial sum for ranking when not all distances done
+  const getPartialSum = (a) => {
+    if (a.totalPoints !== null) return a.totalPoints;
+    return Object.values(a.points ?? {}).filter(Number.isFinite).reduce((s, v) => s + v, 0);
+  };
+
+  const partialLeader = ranked.length > 0 ? getPartialSum(ranked[0]) : null;
+
+  let rows = "";
+  ranked.forEach((a, i) => {
+    const rk = i + 1;
+    const pts = getPartialSum(a);
+    const ptsStr = Number.isFinite(pts) ? pts.toFixed(3) : "—";
+
+    // Delta: convert point deficit → time on next distance
+    let deltaStr = "";
+    if (rk === 1) {
+      deltaStr = '<span class="delta delta--leader">Leader</span>';
+    } else if (Number.isFinite(pts) && Number.isFinite(partialLeader) && nextDist) {
+      const deficit = pts - partialLeader;
+      const timeBehind = deficit * nextDist.divisor;
+      deltaStr = `<span class="delta">${fmtTimePrecise(timeBehind)}</span>`;
+    }
+
+    rows += `<tr>
+      <td class="klass-sidebar__rank">${rk}</td>
+      <td><span class="athlete-name klass-sidebar__name">${esc(a.name)}</span></td>
+      <td class="mono klass-sidebar__pts">${ptsStr}</td>
+      <td class="klass-sidebar__delta">${deltaStr}</td>
+    </tr>`;
+  });
+
+  // Count completed distances
+  const completedCount = distances.filter(d =>
+    standings.all.some(a => a.times?.[d.key] && a.status?.[d.key] === "OK")
+  ).length;
+
+  const statusLabel = completedCount === distances.length
+    ? "Definitief"
+    : `Na ${completedCount}/${distances.length} afstanden`;
+
+  return `
+    <div class="klass-sidebar">
+      <div class="klass-sidebar__header">
+        <span class="klass-sidebar__title">Live Klassement</span>
+        <span class="klass-sidebar__status">${esc(statusLabel)}</span>
+      </div>
+      <div class="klass-sidebar__sub">Achterstand op ${esc(nextDist.label)}</div>
+      <div class="table-wrap">
+        <table class="table table--compact">
+          <thead><tr>
+            <th>#</th><th>Naam</th><th>Pnt</th><th>Δ ${esc(nextDist.label)}</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
     </div>`;
 }
 
