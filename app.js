@@ -193,8 +193,8 @@ function computeQualification(athletes, distances, qualCfg, mode) {
 
 // ── State ──────────────────────────────────────────────
 const state = {
-  selectedModule: "sprint",
-  selectedGender: "m",
+  selectedModule: "allround",
+  selectedGender: "v",
   selectedView: "klassement",
   selectedDistanceKey: null,   // for distance-view
   nextDistKey: null,           // for klassement delta calculation
@@ -209,6 +209,42 @@ const state = {
   overzichtFilter: "all", // "all" | "pbs" | "podiums"
   overzichtSources: { sprint_m: true, sprint_v: false, allround_m: false, allround_v: false },
 };
+
+// ── URL Hash State Persistence ───────────────────────
+// Format: #module-gender-view[-distKey]
+function saveStateToHash() {
+  const parts = [state.selectedModule, state.selectedGender, state.selectedView];
+  if (state.selectedView === "distance" && state.selectedDistanceKey) {
+    parts.push(state.selectedDistanceKey);
+  }
+  const hash = parts.join("-");
+  if (window.location.hash !== `#${hash}`) {
+    history.replaceState(null, "", `#${hash}`);
+  }
+}
+
+function loadStateFromHash() {
+  const hash = window.location.hash.replace("#", "");
+  if (!hash) return;
+  const parts = hash.split("-");
+  // Validate module
+  if (parts[0] && MODULE_CONFIG[parts[0]]) {
+    state.selectedModule = parts[0];
+  }
+  // Validate gender
+  if (parts[1] && (parts[1] === "v" || parts[1] === "m")) {
+    state.selectedGender = parts[1];
+  }
+  // Validate view
+  const validViews = ["klassement", "distance", "headToHead", "overzicht", "kwalificatie"];
+  if (parts[2] && validViews.includes(parts[2])) {
+    state.selectedView = parts[2];
+  }
+  // Distance key (for distance view)
+  if (parts[3] && state.selectedView === "distance") {
+    state.selectedDistanceKey = parts.slice(3).join("-"); // handle keys with dashes
+  }
+}
 
 // ── Utility ────────────────────────────────────────────
 function parseTimeToSeconds(timeStr) {
@@ -239,7 +275,9 @@ function fmtTime(sec) {
   const mm = Math.floor(sec / 60);
   const ss = sec - mm * 60;
   const ssStr = ss.toFixed(2).padStart(5, "0");
-  return mm > 0 ? `${mm}:${ssStr}` : ssStr;
+  // Dutch notation: times over 1 minute use comma as decimal separator
+  if (mm > 0) return `${mm}:${ssStr.replace(".", ",")}`;
+  return ssStr;
 }
 
 function fmtTimePrecise(sec) {
@@ -249,8 +287,29 @@ function fmtTimePrecise(sec) {
   const mm = Math.floor(abs / 60);
   const ss = abs - mm * 60;
   const ssStr = ss.toFixed(2).padStart(5, "0");
-  const t = mm > 0 ? `${mm}:${ssStr}` : ssStr;
-  return `${sign}${t}`;
+  if (mm > 0) return `${sign}${mm}:${ssStr.replace(".", ",")}`;
+  return `${sign}${ssStr}`;
+}
+
+// Format a raw time string (from API) with proper Dutch notation
+// Preserves original precision. Uses comma for times over 1 minute.
+// "38.955" → "38.955", "83.456" → "1:23,456", "4:23.45" → "4:23,45"
+function fmtRawTime(timeStr) {
+  if (!timeStr || timeStr === "—") return "—";
+  const sec = parseTimeToSeconds(timeStr);
+  if (!Number.isFinite(sec)) return timeStr;
+  // Determine decimal precision from original string
+  const lastPart = String(timeStr).split(/[:.]/).pop() ?? "";
+  const dotIdx = lastPart.indexOf(".");
+  // Decimals in the seconds portion
+  const origDecimals = timeStr.includes(".") ? (timeStr.split(".").pop()?.length ?? 2) : 2;
+  const decimals = Math.max(2, Math.min(origDecimals, 3));
+
+  const mm = Math.floor(sec / 60);
+  const ss = sec - mm * 60;
+  const ssStr = ss.toFixed(decimals).padStart(decimals + 3, "0");
+  if (mm > 0) return `${mm}:${ssStr.replace(".", ",")}`;
+  return ssStr;
 }
 
 function esc(str) {
@@ -604,49 +663,59 @@ function parsePastedResults(text) {
 
 // ── Live Data: Fetch single competition results ────────
 // API: live-api.schaatsen.nl — the actual JSON backend behind liveresults.schaatsen.nl
+// Response cache: avoid re-fetching same comp within 5 seconds
+const _fetchCache = {}; // key → { data, ts }
+const FETCH_CACHE_TTL = 5000;
+
 async function fetchCompetitionResults(eventId, compId) {
-  // Primary endpoint (discovered from network tab)
+  const cacheKey = `${eventId}_${compId}`;
+  const cached = _fetchCache[cacheKey];
+  if (cached && Date.now() - cached.ts < FETCH_CACHE_TTL) {
+    lastFetchLog.push({ compId, status: "ok (cached)" });
+    return cached.data;
+  }
+
   const url = `${API_BASE}/events/${eventId}/competitions/${compId}/results/?inSeconds=1`;
 
-  // 1. Try direct fetch first
+  // 1. Try direct fetch first (works if no CORS restriction)
   try {
-    const resp = await fetch(url, {
-      headers: { "Accept": "application/json" },
-    });
+    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
     if (resp.ok) {
       const data = await resp.json();
-      lastFetchLog.push({ compId, url, status: "ok (direct)" });
+      _fetchCache[cacheKey] = { data, ts: Date.now() };
+      lastFetchLog.push({ compId, status: "ok (direct)" });
       return data;
     }
-  } catch (err) {
-    // CORS or network error — try proxy fallback
-    if (!fetchCompetitionResults._corsWarn) {
-      console.warn(`[Klassement] Direct fetch blocked (CORS?), trying proxies...`, err.message);
-      fetchCompetitionResults._corsWarn = true;
+  } catch (_) {}
+
+  // 2. CORS proxy fallback — try multiple proxies sequentially
+  const proxies = [
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  ];
+
+  for (const proxyUrl of proxies) {
+    try {
+      const resp = await fetch(proxyUrl);
+      if (!resp.ok) continue;
+      const text = await resp.text();
+      if (!text || text.length < 10) continue;
+      try {
+        const data = JSON.parse(text);
+        _fetchCache[cacheKey] = { data, ts: Date.now() };
+        lastFetchLog.push({ compId, status: "ok (proxied)" });
+        return data;
+      } catch (_) {
+        // Not JSON — proxy returned HTML error page
+        continue;
+      }
+    } catch (_) {
+      continue;
     }
   }
 
-  // 2. CORS proxy fallback (needed when running from file:// or different origin)
-  const proxies = [
-    (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-    (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  ];
-  for (const proxyFn of proxies) {
-    try {
-      const proxyUrl = proxyFn(url);
-      const resp = await fetch(proxyUrl);
-      if (resp.ok) {
-        const text = await resp.text();
-        try {
-          const data = JSON.parse(text);
-          lastFetchLog.push({ compId, url, status: "ok (proxied)" });
-          return data;
-        } catch (_) {}
-      }
-    } catch (_) {}
-  }
-
-  lastFetchLog.push({ compId, url, status: "failed" });
+  lastFetchLog.push({ compId, status: "failed" });
   return null;
 }
 
@@ -778,17 +847,21 @@ async function fetchLiveResults(moduleKey, genderKey) {
   lastFetchLog = [];
   let anySuccess = false;
 
-  // Fetch all competition results in parallel
-  const fetches = cfg.distances.map(async (dist) => {
+  // Fetch SEQUENTIALLY to avoid CORS proxy rate limiting
+  const allResults = [];
+  for (const dist of cfg.distances) {
     const entry = urlMap[dist.key];
-    if (!entry) return { key: dist.key, results: null };
+    if (!entry) { allResults.push({ key: dist.key, results: null }); continue; }
     const data = await fetchCompetitionResults(eventId, entry.compId);
     const parsed = parseKnsbResponse(data);
-    if (parsed) anySuccess = true;
-    return { key: dist.key, results: parsed };
-  });
-
-  const allResults = await Promise.all(fetches);
+    if (parsed && parsed.length > 0) anySuccess = true;
+    allResults.push({ key: dist.key, results: parsed });
+    console.log(`[Klassement] Comp ${entry.compId} (${dist.key}): ${parsed ? parsed.length + " results" : "no data"}`);
+    // Small delay between requests to be nice to proxy
+    if (cfg.distances.indexOf(dist) < cfg.distances.length - 1) {
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
   if (!anySuccess) return null;
 
   // Capture startlist order from API (API returns names in startlist/pair order)
@@ -927,16 +1000,20 @@ async function loadData() {
       liveMap.set(normalize(la.name), la);
     }
 
+    console.log(`[Klassement] Live athletes: ${liveData.athletes.length}, unique normalized: ${liveMap.size}`);
+    console.log(`[Klassement] Baseline athletes: ${baseline.athletes.length}`);
+
     // Update baseline athletes with live times
     let mergedCount = 0;
     for (const ba of baseline.athletes) {
-      let live = liveMap.get(normalize(ba.name));
+      const baNorm = normalize(ba.name);
+      let live = liveMap.get(baNorm);
 
       // Fuzzy match: if exact name doesn't match, try close matches
       if (!live) {
         let bestDist = 999, bestKey = null;
         for (const [nk, la] of liveMap) {
-          const d = levenshtein(normalize(ba.name), nk);
+          const d = levenshtein(baNorm, nk);
           // Also try matching last name only
           const baLast = ba.name.split(" ").slice(-1)[0].toLowerCase();
           const laLast = la.name.split(" ").slice(-1)[0].toLowerCase();
@@ -949,20 +1026,28 @@ async function loadData() {
         }
         if (bestKey) {
           live = liveMap.get(bestKey);
-          console.log(`[Klassement] Fuzzy match: "${ba.name}" ↔ "${live.name}" (dist ${bestDist})`);
-          liveMap.delete(bestKey); // consume from map
+          console.log(`[Klassement] Fuzzy match: "${ba.name}" [${baNorm}] ↔ "${live.name}" [${bestKey}] (dist ${bestDist})`);
+          liveMap.delete(bestKey);
+        } else {
+          console.warn(`[Klassement] ❌ NO MATCH for "${ba.name}" [${baNorm}]`);
+          // Show all remaining live map keys for debugging
+          if (liveMap.size < 10) {
+            console.log(`  Remaining in liveMap:`, [...liveMap.keys()]);
+          }
         }
       } else {
-        liveMap.delete(normalize(ba.name)); // consume exact match
+        liveMap.delete(baNorm);
       }
 
       if (live) {
+        let athleteMerged = 0;
         for (const d of cfg.distances) {
           if (live.times?.[d.key]) {
             ba.times[d.key] = live.times[d.key];
             ba.status[d.key] = live.status?.[d.key] ?? "OK";
             ba.pb[d.key] = live.pb?.[d.key] ?? false;
             mergedCount++;
+            athleteMerged++;
           }
         }
       }
@@ -1048,12 +1133,14 @@ let polling = false;
 function startPolling() {
   stopPolling();
   polling = true;
-  (async function tick() {
+  async function tick() {
     if (!polling) return;
     await loadData();
     render();
     if (polling) pollTimer = setTimeout(tick, POLL_INTERVAL);
-  })();
+  }
+  // Delay first poll tick (loadAndRender already did one fetch)
+  pollTimer = setTimeout(tick, POLL_INTERVAL);
 }
 
 function stopPolling() {
@@ -1087,15 +1174,44 @@ function computeAthletePoints(athlete, distances) {
 function computeStandings(resultsRaw, distances) {
   if (!resultsRaw?.athletes?.length) return { all:[], full:[], partial:[] };
   const computed = resultsRaw.athletes.map(a => ({ ...a, ...computeAthletePoints(a, distances) }));
-  const full = computed.filter(x => x.totalPoints !== null).sort((a,b) => a.totalPoints - b.totalPoints);
-  const partial = computed.filter(x => x.totalPoints === null).sort((a,b) => b.completedCount - a.completedCount);
-  full.forEach((x,i) => x.rank = i + 1);
-  partial.forEach(x => x.rank = null);
-  const leader = full[0]?.totalPoints ?? null;
-  for (const a of full) a.pointsDelta = Number.isFinite(leader) ? truncateDecimals(a.totalPoints - leader, 3) : null;
-  for (const a of partial) a.pointsDelta = null;
 
-  const all = [...full, ...partial];
+  // Sort ALL athletes: primary = most distances completed (desc), secondary = lowest points (asc)
+  computed.sort((a, b) => {
+    if (a.completedCount !== b.completedCount) return b.completedCount - a.completedCount;
+    // Same number of distances: sort by total points (or partial sum)
+    const aPts = a.totalPoints ?? sumPartialPoints(a, distances);
+    const bPts = b.totalPoints ?? sumPartialPoints(b, distances);
+    if (aPts === null && bPts === null) return 0;
+    if (aPts === null) return 1;
+    if (bPts === null) return -1;
+    return aPts - bPts;
+  });
+
+  // Assign ranks: athletes with same completedCount share a ranking group
+  // Only athletes who have skated at least 1 distance get a rank
+  let rank = 1;
+  for (let i = 0; i < computed.length; i++) {
+    if (computed[i].completedCount === 0) {
+      computed[i].rank = null;
+    } else {
+      computed[i].rank = rank++;
+    }
+  }
+
+  // Compute deltas: leader = rank 1
+  const leader = computed[0]?.totalPoints ?? sumPartialPoints(computed[0], distances);
+  for (const a of computed) {
+    const pts = a.totalPoints ?? sumPartialPoints(a, distances);
+    if (Number.isFinite(leader) && Number.isFinite(pts) && a.completedCount > 0) {
+      a.pointsDelta = truncateDecimals(pts - leader, 3);
+    } else {
+      a.pointsDelta = null;
+    }
+  }
+
+  const full = computed.filter(x => x.totalPoints !== null);
+  const partial = computed.filter(x => x.totalPoints === null);
+  const all = computed;
 
   // Compute per-distance rankings (sorted by time, fastest = 1)
   const distRanks = {};
@@ -1108,12 +1224,22 @@ function computeStandings(resultsRaw, distances) {
       distRanks[a.athleteId][d.key] = i + 1;
     });
   }
-  // Attach to each athlete
   for (const a of all) {
     a.distRanks = distRanks[a.athleteId] ?? {};
   }
 
   return { all, full, partial };
+}
+
+// Sum available points for partial klassement (not all distances completed)
+function sumPartialPoints(athlete, distances) {
+  if (!athlete) return null;
+  let sum = 0, count = 0;
+  for (const d of distances) {
+    const p = athlete.points?.[d.key];
+    if (Number.isFinite(p)) { sum += p; count++; }
+  }
+  return count > 0 ? truncateDecimals(sum, 3) : null;
 }
 
 /**
@@ -1277,7 +1403,7 @@ function openAthletePopup(athleteName) {
 
           return `<tr class="${pos && pos <= 3 ? podCls(pos) : ""}">
             <td class="dist-col">${esc(d.label)}</td>
-            <td class="mono">${esc(time)}${pbBadge(isPb)}</td>
+            <td class="mono">${fmtRawTime(time)}${pbBadge(isPb)}</td>
             <td>${pos ? rankHtml(pos) : "—"}</td>
             <td>${delta === 0 ? '<span class="delta delta--leader">Snelst</span>' : Number.isFinite(delta) ? `<span class="delta">+${fmtTimePrecise(delta).slice(1)}</span>` : ""}</td>
           </tr>`;
@@ -1479,7 +1605,7 @@ function renderDistanceView(dist, standings) {
     rowsHtml += `<tr class="${podCls(r.rank)}">
       <td>${rankHtml(r.rank)}</td>
       <td><span class="athlete-name">${esc(r.name)}</span></td>
-      <td class="mono">${esc(r.time)}${pbBadge(r.isPb)}</td>
+      <td class="mono">${fmtRawTime(r.time)}${pbBadge(r.isPb)}</td>
       <td>${deltaStr}</td>
     </tr>`;
   }
@@ -1653,7 +1779,7 @@ function renderStandingsView(distances, standings) {
       const t = a.times?.[d.key];
       const pos = a.distRanks?.[d.key];
       if (!t) return `<td class="mono">—</td>`;
-      return `<td class="mono">${esc(t)}${distRankHtml(pos)}</td>`;
+      return `<td class="mono">${fmtRawTime(t)}${distRankHtml(pos)}</td>`;
     }).join("");
 
     // Delta: convert points deficit → time on the selected next distance
@@ -1665,11 +1791,16 @@ function renderStandingsView(distances, standings) {
       deltaHtml = `<span class="delta">${fmtTimePrecise(timeBehind)}</span>`;
     }
 
+    // Points: show total or partial sum
+    const pts = a.totalPoints ?? sumPartialPoints(a, distances);
+    const ptsStr = Number.isFinite(pts) ? pts.toFixed(3) : "—";
+    const ptsDim = a.totalPoints === null && a.completedCount > 0 ? ' style="opacity:.5"' : "";
+
     return `<tr class="${podCls(a.rank)}">
       <td>${rankHtml(a.rank)}</td>
       <td><span class="athlete-name">${esc(a.name)}</span></td>
       ${cells}
-      <td class="mono mono--bold">${fmtPts(a.totalPoints)}</td>
+      <td class="mono mono--bold"${ptsDim}>${ptsStr}</td>
       <td>${deltaHtml}</td>
     </tr>`;
   }).join("");
@@ -1742,12 +1873,12 @@ function renderHeadToHeadView(distances, standings) {
       }
 
       return `<div class="mirror-row">
-        <div class="mirror-cell ${clsA}">${esc(tA)}</div>
+        <div class="mirror-cell ${clsA}">${fmtRawTime(tA)}</div>
         <div class="mirror-center">
           <span class="mirror-center__dist">${esc(d.label)}</span>
           ${diffHtml}
         </div>
-        <div class="mirror-cell mirror-cell--right ${clsB}">${esc(tB)}</div>
+        <div class="mirror-cell mirror-cell--right ${clsB}">${fmtRawTime(tB)}</div>
       </div>`;
     }).join("");
 
@@ -2031,7 +2162,7 @@ function renderOverzichtView() {
           ${showSource ? `<td>${i === 0 ? `<span class="source-tag">${esc(t.source)}</span>` : ""}</td>` : ""}
           <td>${medals[i]}</td>
           <td><span class="athlete-name">${esc(a.name)}</span></td>
-          <td class="mono">${esc(a.times?.[t.dist.key] ?? "—")}${pbBadge(isPb)}</td>
+          <td class="mono">${fmtRawTime(a.times?.[t.dist.key])}${pbBadge(isPb)}</td>
           <td>${delta === 0 ? "" : Number.isFinite(delta) ? `<span class="delta">+${fmtTimePrecise(delta)}</span>` : ""}</td>
         </tr>`;
       });
@@ -2074,7 +2205,7 @@ function renderOverzichtView() {
             <td><span class="athlete-name">${esc(p.name)}</span></td>
             ${showSource ? `<td><span class="source-tag">${esc(p.source)}</span></td>` : ""}
             <td>${esc(p.distLabel)}</td>
-            <td class="mono">${esc(p.time)}</td>
+            <td class="mono">${fmtRawTime(p.time)}</td>
             <td><span class="pb-badge">PB</span></td>
           </tr>`).join("")}</tbody>
         </table></div>`;
@@ -2748,6 +2879,7 @@ function render() {
   const cfg = getActiveConfig();
   setActive(el.moduleTabs, "module", state.selectedModule);
   setActive(el.genderTabs, "gender", state.selectedGender);
+  saveStateToHash();
   renderMeta(cfg);
   renderViewButtons(cfg.distances);
   if (state.selectedView === "distance" && !state.selectedDistanceKey) {
@@ -2773,14 +2905,10 @@ async function loadAndRender() {
 
 async function boot() {
   cacheEls();
+  loadStateFromHash();
   bindEvents();
   initPopupHandlers();
   loadManualTimes();
-
-  // Discover competition IDs from live API (logged to console)
-  fetchChampionships("2026_NED_0003").then(d => { if (d) console.log("[Klassement] NK Sprint championships:", d); });
-  fetchChampionships("2026_NED_0004").then(d => { if (d) console.log("[Klassement] NK Allround championships:", d); });
-
   await loadAndRender();
 }
 
