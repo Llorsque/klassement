@@ -602,7 +602,7 @@ function getPairNumber(startlist, name) {
 // ── Live Data: State ───────────────────────────────────
 let dataSource = "waiting"; // "live" | "waiting" | "manual"
 let pollTimer = null;
-const POLL_INTERVAL = 2_000; // 2 seconds
+const POLL_INTERVAL = 30_000; // 30 seconds (matches cache TTL)
 let lastFetchLog = [];
 
 // ── Manual Times Entry ────────────────────────────────
@@ -663,9 +663,9 @@ function parsePastedResults(text) {
 
 // ── Live Data: Fetch single competition results ────────
 // API: live-api.schaatsen.nl — the actual JSON backend behind liveresults.schaatsen.nl
-// Response cache: avoid re-fetching same comp within 5 seconds
+// Aggressive cache: 30s TTL to avoid CORS proxy rate limiting
 const _fetchCache = {}; // key → { data, ts }
-const FETCH_CACHE_TTL = 5000;
+const FETCH_CACHE_TTL = 30_000; // 30 seconds
 
 async function fetchCompetitionResults(eventId, compId) {
   const cacheKey = `${eventId}_${compId}`;
@@ -706,59 +706,50 @@ async function fetchCompetitionResults(eventId, compId) {
         _fetchCache[cacheKey] = { data, ts: Date.now() };
         lastFetchLog.push({ compId, status: "ok (proxied)" });
         return data;
-      } catch (_) {
-        // Not JSON — proxy returned HTML error page
-        continue;
-      }
-    } catch (_) {
-      continue;
-    }
+      } catch (_) { continue; }
+    } catch (_) { continue; }
   }
 
   lastFetchLog.push({ compId, status: "failed" });
   return null;
 }
 
-// Also fetch personal bests for PB detection
-async function fetchPersonalBests(eventId, compId) {
-  try {
-    const url = `${API_BASE}/events/${eventId}/competitions/${compId}/personal-bests/?inSeconds=1`;
-    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
-    if (resp.ok) return await resp.json();
-  } catch (_) {}
-  return null;
-}
-
-// Auto-discover competitions for an event (maps comp names to IDs)
-async function fetchChampionships(eventId) {
-  try {
-    const url = `${API_BASE}/events/${eventId}/championships/`;
-    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
-    if (resp.ok) {
-      const data = await resp.json();
-      console.log(`[Klassement] 📋 Championships for ${eventId}:`, data);
-      return data;
-    }
-  } catch (_) {}
-  return null;
-}
-
-// Fetch championships list to auto-discover comp ID → distance mapping
-async function fetchChampionships(eventId) {
-  try {
-    const url = `${API_BASE}/events/${eventId}/championships/`;
-    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
-    if (resp.ok) {
-      const data = await resp.json();
-      console.log(`[Klassement] Championships for ${eventId}:`, data);
-      return data;
-    }
-  } catch (err) {
-    console.log(`[Klassement] Championships fetch failed:`, err.message);
+// Pre-fetch ALL comps for an event (both genders) in one go
+// This avoids rate limiting when switching between genders
+async function prefetchEvent(eventId) {
+  const now = Date.now();
+  // Check how many we're missing
+  const missing = [];
+  for (let c = 1; c <= 8; c++) {
+    const cached = _fetchCache[`${eventId}_${c}`];
+    if (!cached || (now - cached.ts >= FETCH_CACHE_TTL)) missing.push(c);
   }
-  return null;
+  if (missing.length === 0) return;
+
+  console.log(`[Klassement] Pre-fetching ${missing.length} comps for ${eventId}: [${missing.join(",")}]`);
+  const failed = [];
+  for (const c of missing) {
+    await fetchCompetitionResults(eventId, c);
+    if (!_fetchCache[`${eventId}_${c}`]?.data) failed.push(c);
+    // 500ms delay between requests to stay under proxy rate limit
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  // Retry failed comps once (different proxy might work after cooldown)
+  if (failed.length > 0) {
+    console.log(`[Klassement] Retrying ${failed.length} failed comps: [${failed.join(",")}]`);
+    await new Promise(r => setTimeout(r, 1000)); // extra pause
+    for (const c of failed) {
+      await fetchCompetitionResults(eventId, c);
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
+  const ok = [1,2,3,4,5,6,7,8].filter(c => _fetchCache[`${eventId}_${c}`]?.data).length;
+  console.log(`[Klassement] Pre-fetch done: ${ok}/8 comps in cache`);
 }
 
+// Also fetch personal bests for PB detection
 // ── Live Data: Parse KNSB response ─────────────────────
 // Attempts to normalize various possible JSON structures into our format.
 // Returns array of { name, time, status } or null.
@@ -847,7 +838,7 @@ async function fetchLiveResults(moduleKey, genderKey) {
   lastFetchLog = [];
   let anySuccess = false;
 
-  // Fetch SEQUENTIALLY to avoid CORS proxy rate limiting
+  // Fetch from cache (prefetchEvent should have loaded everything)
   const allResults = [];
   for (const dist of cfg.distances) {
     const entry = urlMap[dist.key];
@@ -856,11 +847,7 @@ async function fetchLiveResults(moduleKey, genderKey) {
     const parsed = parseKnsbResponse(data);
     if (parsed && parsed.length > 0) anySuccess = true;
     allResults.push({ key: dist.key, results: parsed });
-    console.log(`[Klassement] Comp ${entry.compId} (${dist.key}): ${parsed ? parsed.length + " results" : "no data"}`);
-    // Small delay between requests to be nice to proxy
-    if (cfg.distances.indexOf(dist) < cfg.distances.length - 1) {
-      await new Promise(r => setTimeout(r, 150));
-    }
+    console.log(`[Klassement] ${moduleKey}/${genderKey} Comp ${entry.compId} → ${dist.key}: ${parsed ? parsed.length + " results" : "NO DATA"}`);
   }
   if (!anySuccess) return null;
 
@@ -990,7 +977,13 @@ async function loadData() {
   const baseline = makeParticipantBaseline(m, g);
   const normalize = normalizeName;
 
-  // 2. Try fetching live data
+  // 2. Pre-fetch ALL comps for this event (both genders) to avoid rate limiting on switch
+  const eventId = LIVE_URLS[m]?.eventId;
+  if (eventId) {
+    await prefetchEvent(eventId);
+  }
+
+  // 3. Now fetch live data for current gender (should all hit cache)
   const liveData = await fetchLiveResults(m, g);
 
   if (liveData && liveData.athletes.length > 0) {
@@ -2591,15 +2584,45 @@ async function openDebugPanel() {
 
   content.innerHTML = '<div style="color:#F6AD55">⏳ Fetching all comps...</div>';
 
-  let html = '<div style="margin-bottom:8px;font-size:14px;font-weight:700;color:#fff">🔍 Debug — Comp Mapping + Name Match</div>';
-  html += `<div style="margin-bottom:12px;color:var(--text-dim)">DataSource: <b style="color:#fff">${esc(dataSource)}</b> | Standings: <b style="color:#fff">${(state.standings?.all??[]).length} athletes, ${(state.standings?.all??[]).filter(a=>a.completedCount>0).length} met tijden</b></div>`;
-
-  // Fetch all 8 comps for allround
+  // Use prefetchEvent to get all data (reuses cache)
   const eventId = "2026_NED_0004";
+  await prefetchEvent(eventId);
+
   const compData = {};
   for (let c = 1; c <= 8; c++) {
-    compData[c] = await fetchCompetitionResults(eventId, c);
+    const cached = _fetchCache[`${eventId}_${c}`];
+    compData[c] = cached?.data ?? null;
   }
+
+  let html = '<div style="margin-bottom:8px;font-size:14px;font-weight:700;color:#fff">🔍 Debug — Comp Mapping + Name Match</div>';
+  html += `<div style="margin-bottom:4px;color:var(--text-dim)">DataSource: <b style="color:#fff">${esc(dataSource)}</b> | Standings: <b style="color:#fff">${(state.standings?.all??[]).length} athletes, ${(state.standings?.all??[]).filter(a=>a.completedCount>0).length} met tijden</b></div>`;
+
+  // Cache status
+  const now = Date.now();
+  const cacheStatus = [1,2,3,4,5,6,7,8].map(c => {
+    const cached = _fetchCache[`${eventId}_${c}`];
+    if (!cached) return `<span style="color:#FC8181">C${c}:❌</span>`;
+    const age = Math.round((now - cached.ts) / 1000);
+    const hasData = Array.isArray(cached.data) && cached.data.length > 0;
+    return `<span style="color:${hasData ? '#68D391' : '#F6AD55'}">C${c}:${hasData ? cached.data.length : 0} (${age}s)</span>`;
+  }).join(" ");
+  html += `<div style="margin-bottom:8px;font-size:10px;font-family:var(--font-mono);color:var(--text-dim)">Cache: ${cacheStatus}</div>`;
+
+  // Per-distance merge status for current module+gender
+  const curCfg = getActiveConfig();
+  const curEventId = LIVE_URLS[state.selectedModule]?.eventId ?? eventId;
+  const curUrls = LIVE_URLS[state.selectedModule]?.[state.selectedGender] ?? {};
+  const mergeStatus = curCfg.distances.map(d => {
+    const entry = curUrls[d.key];
+    if (!entry) return `<span style="color:#FC8181">${d.label}: no mapping</span>`;
+    const cached = _fetchCache[`${curEventId}_${entry.compId}`];
+    const parsed = cached?.data ? parseKnsbResponse(cached.data) : null;
+    const count = parsed ? parsed.length : 0;
+    const icon = count > 0 ? "✅" : "❌";
+    return `<span style="color:${count > 0 ? '#68D391' : '#FC8181'}">${d.label}→C${entry.compId}: ${count} ${icon}</span>`;
+  }).join(" | ");
+  html += `<div style="margin-bottom:8px;font-size:11px;color:var(--text-dim)"><b style="color:#fff">${state.selectedModule} ${state.selectedGender}:</b> ${mergeStatus}</div>`;
+  html += `<div style="margin-bottom:12px"><button id="debugForceRefresh" style="padding:4px 12px;background:#F6AD55;color:#000;border:none;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">🔄 Force Refresh (clear cache)</button></div>`;
 
   // Parse each and show names + auto-detect gender
   const vNames = new Set(PARTICIPANTS.allround.v.map(p => normalizeName(p.name)));
@@ -2727,6 +2750,16 @@ async function openDebugPanel() {
   }
 
   content.innerHTML = html;
+
+  // Force refresh handler
+  document.getElementById("debugForceRefresh")?.addEventListener("click", async () => {
+    // Clear all caches
+    for (const k of Object.keys(_fetchCache)) delete _fetchCache[k];
+    console.log("[Klassement] Cache cleared, refetching...");
+    await loadAndRender();
+    // Re-open debug panel to show updated state
+    openDebugPanel();
+  });
 
   // Auto-fix handler
   document.getElementById("debugAutoFix")?.addEventListener("click", () => {
