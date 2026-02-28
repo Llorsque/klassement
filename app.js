@@ -881,6 +881,17 @@ function makeParticipantBaseline(moduleKey, genderKey) {
 const resultsCache = {}; // key: "sprint_m" etc → { raw, standings }
 
 // ── Data Loading ───────────────────────────────────────
+// Simple Levenshtein distance for fuzzy name matching debug
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      d[i][j] = Math.min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+(a[i-1]!==b[j-1]?1:0));
+  return d[m][n];
+}
+
 async function loadData() {
   const m = state.selectedModule;
   const g = state.selectedGender;
@@ -903,9 +914,33 @@ async function loadData() {
     // Update baseline athletes with live times
     let mergedCount = 0;
     for (const ba of baseline.athletes) {
-      const live = liveMap.get(normalize(ba.name));
+      let live = liveMap.get(normalize(ba.name));
+
+      // Fuzzy match: if exact name doesn't match, try close matches
+      if (!live) {
+        let bestDist = 999, bestKey = null;
+        for (const [nk, la] of liveMap) {
+          const d = levenshtein(normalize(ba.name), nk);
+          // Also try matching last name only
+          const baLast = ba.name.split(" ").slice(-1)[0].toLowerCase();
+          const laLast = la.name.split(" ").slice(-1)[0].toLowerCase();
+          const lastNameMatch = baLast === laLast && baLast.length >= 3;
+
+          if ((d <= 2 || lastNameMatch) && d < bestDist) {
+            bestDist = d;
+            bestKey = nk;
+          }
+        }
+        if (bestKey) {
+          live = liveMap.get(bestKey);
+          console.log(`[Klassement] Fuzzy match: "${ba.name}" ↔ "${live.name}" (dist ${bestDist})`);
+          liveMap.delete(bestKey); // consume from map
+        }
+      } else {
+        liveMap.delete(normalize(ba.name)); // consume exact match
+      }
+
       if (live) {
-        // Merge times, status, pb from live onto participant
         for (const d of cfg.distances) {
           if (live.times?.[d.key]) {
             ba.times[d.key] = live.times[d.key];
@@ -914,14 +949,21 @@ async function loadData() {
             mergedCount++;
           }
         }
-        liveMap.delete(normalize(ba.name)); // consumed
       }
     }
 
-    // Any live athletes NOT in participant list? Ignore them (participant list is truth).
+    // Any live athletes NOT in participant list? Log with details for debugging
     if (liveMap.size > 0) {
-      console.log("[Klassement] Live athletes not in participant list (ignored):",
-        [...liveMap.values()].map(a => a.name));
+      console.warn("[Klassement] ⚠️ Live athletes NOT in participant list (ignored):",
+        [...liveMap.values()].map(a => `"${a.name}"`).join(", "));
+      // Show closest matches to help debug
+      for (const [nk, la] of liveMap) {
+        const closest = baseline.athletes
+          .map(ba => ({ name: ba.name, dist: levenshtein(nk, normalize(ba.name)) }))
+          .sort((a, b) => a.dist - b.dist)
+          .slice(0, 2);
+        console.log(`  "${la.name}" → closest: ${closest.map(c => `"${c.name}" (dist ${c.dist})`).join(", ")}`);
+      }
     }
 
     dataSource = "live";
@@ -2394,119 +2436,183 @@ async function openDebugPanel() {
   if (!panel || !content) return;
   panel.hidden = false;
 
-  content.innerHTML = '<div style="color:#F6AD55">⏳ API tests via proxy...</div>';
+  content.innerHTML = '<div style="color:#F6AD55">⏳ Fetching all comps...</div>';
 
-  let html = '<div style="margin-bottom:12px;font-size:14px;font-weight:700;color:#fff">🔍 Debug — Live API + Data Flow</div>';
-  html += `<div style="margin-bottom:4px;color:var(--text-dim)">DataSource: <b style="color:#fff">${esc(dataSource)}</b> | Module: <b style="color:#fff">${esc(state.selectedModule)} ${esc(state.selectedGender)}</b></div>`;
+  let html = '<div style="margin-bottom:8px;font-size:14px;font-weight:700;color:#fff">🔍 Debug — Comp Mapping + Name Match</div>';
+  html += `<div style="margin-bottom:12px;color:var(--text-dim)">DataSource: <b style="color:#fff">${esc(dataSource)}</b> | Standings: <b style="color:#fff">${(state.standings?.all??[]).length} athletes, ${(state.standings?.all??[]).filter(a=>a.completedCount>0).length} met tijden</b></div>`;
 
-  // Show current standings count
-  const sAll = state.standings?.all ?? [];
-  const withTimes = sAll.filter(a => a.completedCount > 0);
-  html += `<div style="margin-bottom:12px;color:var(--text-dim)">Standings: <b style="color:#fff">${sAll.length} atleten, ${withTimes.length} met tijden</b></div>`;
-
-  // If we have standings with times, show them
-  if (withTimes.length > 0) {
-    html += '<div style="margin:8px 0 4px;font-weight:700;color:#68D391">Huidige data in app:</div>';
-    for (const a of withTimes.slice(0, 5)) {
-      const times = Object.entries(a.times ?? {}).filter(([,v]) => v).map(([k,v]) => `${k}=${v}`).join(", ");
-      html += `<div style="color:#fff;font-size:11px">${esc(a.name)}: ${esc(times)}</div>`;
-    }
-    if (withTimes.length > 5) html += `<div style="color:var(--text-dim)">... +${withTimes.length - 5} meer</div>`;
+  // Fetch all 8 comps for allround
+  const eventId = "2026_NED_0004";
+  const compData = {};
+  for (let c = 1; c <= 8; c++) {
+    compData[c] = await fetchCompetitionResults(eventId, c);
   }
 
-  // Test ONE comp via proxy to show what the API returns
-  const testEvent = "2026_NED_0004"; // Allround
-  const testComp = 1; // First comp
-  const testUrl = `${API_BASE}/events/${testEvent}/competitions/${testComp}/results/?inSeconds=1`;
-  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(testUrl)}`;
+  // Parse each and show names + auto-detect gender
+  const vNames = new Set(PARTICIPANTS.allround.v.map(p => p.name.trim().toLowerCase()));
+  const mNames = new Set(PARTICIPANTS.allround.m.map(p => p.name.trim().toLowerCase()));
 
-  html += `<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">API Test: Comp 1 (NK Allround) via proxy</div>`;
-  html += `<div style="color:var(--text-dim);font-size:10px;margin-bottom:4px;word-break:break-all">${esc(proxyUrl)}</div>`;
+  html += '<div style="margin:8px 0 4px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">NK Allround — Comp ID Auto-Detect</div>';
 
-  try {
-    const resp = await fetch(proxyUrl);
-    html += `<div style="color:#68D391">HTTP ${resp.status} — ${resp.statusText}</div>`;
-    const text = await resp.text();
-    html += `<div style="color:var(--text-dim);font-size:10px">Response length: ${text.length} chars</div>`;
+  const autoMap = {}; // compId → { gender, names[] }
 
-    // Show raw response (first 500 chars)
-    html += `<div style="margin:8px 0 4px;font-weight:700;color:#F6AD55">Ruwe response (eerste 500 tekens):</div>`;
-    html += `<div style="background:rgba(0,0,0,.3);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:10px;color:#ddd;max-height:150px;overflow-y:auto">${esc(text.slice(0, 500))}</div>`;
+  for (let c = 1; c <= 8; c++) {
+    const parsed = parseKnsbResponse(compData[c]);
+    const names = parsed ? parsed.map(r => r.name) : [];
+    const namesSample = names.slice(0, 4).join(", ");
 
-    // Try to parse
-    try {
-      const data = JSON.parse(text);
-      html += `<div style="margin:8px 0 4px;font-weight:700;color:#68D391">✅ JSON parsed — type: ${Array.isArray(data) ? "array" : typeof data}</div>`;
-
-      // Show keys if object
-      if (!Array.isArray(data) && typeof data === "object") {
-        html += `<div style="color:#fff;font-size:11px">Top-level keys: ${Object.keys(data).join(", ")}</div>`;
-
-        // Dig into common nested arrays
-        for (const key of ["results", "Results", "data", "competitors", "entries"]) {
-          if (Array.isArray(data[key])) {
-            html += `<div style="color:#68D391;font-size:11px">data.${key}: ${data[key].length} items</div>`;
-            if (data[key].length > 0) {
-              html += `<div style="color:#fff;font-size:10px">First item keys: ${Object.keys(data[key][0]).join(", ")}</div>`;
-              html += `<div style="background:rgba(0,0,0,.3);padding:6px;border-radius:4px;font-size:10px;color:#ddd;max-height:100px;overflow-y:auto">${esc(JSON.stringify(data[key][0], null, 1))}</div>`;
-            }
-          }
-        }
-      }
-
-      // If array, show first item
-      if (Array.isArray(data) && data.length > 0) {
-        html += `<div style="color:#68D391;font-size:11px">Array: ${data.length} items</div>`;
-        html += `<div style="color:#fff;font-size:10px">First item keys: ${Object.keys(data[0]).join(", ")}</div>`;
-        html += `<div style="background:rgba(0,0,0,.3);padding:6px;border-radius:4px;font-size:10px;color:#ddd;max-height:100px;overflow-y:auto">${esc(JSON.stringify(data[0], null, 1))}</div>`;
-      }
-
-      // Run through our parser
-      const parsed = parseKnsbResponse(data);
-      html += `<div style="margin:8px 0 4px;font-weight:700;color:#F6AD55">parseKnsbResponse resultaat:</div>`;
-      if (parsed && parsed.length > 0) {
-        html += `<div style="color:#68D391">${parsed.length} resultaten geparsed</div>`;
-        for (const r of parsed.slice(0, 5)) {
-          html += `<div style="color:#fff;font-size:11px">${esc(r.name)} → ${esc(r.time ?? "geen tijd")} (status: ${esc(r.status)}, pb: ${r.pb})</div>`;
-        }
-      } else {
-        html += `<div style="color:#FC8181">❌ Parser retourneerde null/leeg! Data structuur niet herkend.</div>`;
-      }
-    } catch (parseErr) {
-      html += `<div style="color:#FC8181">❌ JSON parse error: ${esc(parseErr.message)}</div>`;
+    // Match against participant lists
+    let vMatch = 0, mMatch = 0;
+    for (const n of names) {
+      if (vNames.has(n.trim().toLowerCase())) vMatch++;
+      if (mNames.has(n.trim().toLowerCase())) mMatch++;
     }
-  } catch (fetchErr) {
-    html += `<div style="color:#FC8181">❌ Fetch error: ${esc(fetchErr.message)}</div>`;
-  }
 
-  // Show ALL comp IDs quickly (just status)
-  html += `<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Alle comps (via fetchCompetitionResults)</div>`;
-  for (let compId = 1; compId <= 8; compId++) {
-    const data = await fetchCompetitionResults(testEvent, compId);
-    const parsed = parseKnsbResponse(data);
-    let mapping = "—";
+    // Auto-detect gender
+    let detectedGender = "?";
+    if (vMatch > mMatch && vMatch >= 5) detectedGender = "♀";
+    else if (mMatch > vMatch && mMatch >= 5) detectedGender = "♂";
+    else if (names.length === 0) detectedGender = "leeg";
+    autoMap[c] = { gender: detectedGender, vMatch, mMatch, names, parsed };
+
+    // Current mapping
+    let curMapping = "—";
     for (const [gk, gd] of Object.entries(LIVE_URLS.allround)) {
       if (gk === "eventId") continue;
       for (const [dk, dd] of Object.entries(gd)) {
-        if (dd.compId === compId) {
+        if (dd.compId === c) {
           const dist = MODULE_CONFIG.allround?.genders[gk]?.distances.find(d => d.key === dk);
-          mapping = `${gk === "v" ? "♀" : "♂"} ${dist?.label ?? dk}`;
+          curMapping = `${gk === "v" ? "♀" : "♂"} ${dist?.label ?? dk}`;
         }
       }
     }
-    const names = parsed ? parsed.slice(0, 2).map(r => r.name).join(", ") : "geen data";
-    const c = parsed ? "#68D391" : "#FC8181";
-    html += `<div style="padding:2px 0;color:${c}"><b>Comp ${compId}</b> [${esc(mapping)}] → ${parsed ? parsed.length + " results" : "❌"} (${esc(names)})</div>`;
+
+    const matchOk = (detectedGender === "♀" && curMapping.startsWith("♀")) ||
+                    (detectedGender === "♂" && curMapping.startsWith("♂")) ||
+                    detectedGender === "leeg";
+    const icon = detectedGender === "leeg" ? "⏸️" : matchOk ? "✅" : "❌ FOUT";
+    const color = detectedGender === "leeg" ? "var(--text-dim)" : matchOk ? "#68D391" : "#FC8181";
+
+    html += `<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+      <div style="color:${color}"><b>Comp ${c}</b> — Mapping: ${esc(curMapping)} — Detect: ${detectedGender} (♀${vMatch} ♂${mMatch}) ${icon}</div>
+      <div style="color:var(--text-dim);font-size:10px">${names.length} results: ${esc(namesSample)}${names.length > 4 ? ", ..." : ""}</div>
+    </div>`;
   }
 
-  // Show fetch log
-  html += '<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Fetch log</div>';
-  for (const log of lastFetchLog.slice(-10)) {
-    const c = log.status?.startsWith("ok") ? "#68D391" : "#FC8181";
-    html += `<div style="padding:1px 0;color:${c};font-size:11px">[comp ${log.compId}] ${esc(log.status)}</div>`;
+  // Name matching detail for current module
+  const m = state.selectedModule, g = state.selectedGender;
+  const cfg = getActiveConfig();
+  const partList = PARTICIPANTS[m]?.[g] ?? [];
+  const partNames = new Set(partList.map(p => p.name.trim().toLowerCase()));
+
+  html += `<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Name Match: ${esc(m)} ${esc(g)} (${partList.length} deelnemers)</div>`;
+
+  // Get all API names for current module+gender comps
+  const urlMap = LIVE_URLS[m]?.[g] ?? {};
+  const apiNames = new Map(); // normalized → original
+  for (const [dk, dd] of Object.entries(urlMap)) {
+    const parsed = parseKnsbResponse(compData[dd.compId]);
+    if (!parsed) continue;
+    for (const r of parsed) {
+      const nk = r.name.trim().toLowerCase();
+      if (!apiNames.has(nk)) apiNames.set(nk, { name: r.name, dists: [] });
+      apiNames.get(nk).dists.push(dk);
+    }
+  }
+
+  // Show matches and mismatches
+  let matchCount = 0;
+  const unmatched = [];
+  for (const p of partList) {
+    const nk = p.name.trim().toLowerCase();
+    if (apiNames.has(nk)) {
+      matchCount++;
+    } else {
+      unmatched.push(p.name);
+    }
+  }
+
+  // API names NOT in our list
+  const apiOnly = [];
+  for (const [nk, info] of apiNames) {
+    if (!partNames.has(nk)) apiOnly.push(info.name);
+  }
+
+  html += `<div style="color:${matchCount === partList.length ? "#68D391" : "#FC8181"}">Match: ${matchCount}/${partList.length}</div>`;
+
+  if (unmatched.length > 0) {
+    html += `<div style="margin:4px 0;color:#FC8181;font-size:12px"><b>Deelnemers NIET in API:</b></div>`;
+    for (const n of unmatched) {
+      html += `<div style="color:#FC8181;font-size:11px;padding:1px 0">• ${esc(n)}</div>`;
+    }
+  }
+  if (apiOnly.length > 0) {
+    html += `<div style="margin:4px 0;color:#F6AD55;font-size:12px"><b>API namen NIET in deelnemerslijst:</b></div>`;
+    for (const n of apiOnly) {
+      html += `<div style="color:#F6AD55;font-size:11px;padding:1px 0">• ${esc(n)}</div>`;
+    }
+  }
+
+  // Suggest fix button
+  const wrongComps = Object.entries(autoMap).filter(([c, d]) =>
+    d.gender !== "leeg" && d.gender !== "?"
+  );
+  if (wrongComps.some(([c, d]) => {
+    let cur = "";
+    for (const [gk, gd] of Object.entries(LIVE_URLS.allround)) {
+      if (gk === "eventId") continue;
+      for (const [, dd] of Object.entries(gd)) {
+        if (dd.compId === Number(c)) cur = gk === "v" ? "♀" : "♂";
+      }
+    }
+    return (d.gender === "♀" && cur !== "♀") || (d.gender === "♂" && cur !== "♂");
+  })) {
+    html += `<div style="margin:12px 0;padding:10px;background:rgba(252,129,129,.15);border:1px solid rgba(252,129,129,.3);border-radius:8px;color:#FC8181">
+      <b>⚠️ Comp ID mapping is fout!</b> Gender mismatch gedetecteerd. Klik om automatisch te fixen:
+      <button id="debugAutoFix" style="margin-top:6px;display:block;padding:6px 16px;background:#F6AD55;color:#000;border:none;border-radius:6px;font-weight:700;cursor:pointer">🔧 Auto-fix mapping</button>
+    </div>`;
   }
 
   content.innerHTML = html;
+
+  // Auto-fix handler
+  document.getElementById("debugAutoFix")?.addEventListener("click", () => {
+    // Rebuild LIVE_URLS based on auto-detected genders
+    // Group comps by gender
+    const vComps = [], mComps = [];
+    for (const [c, d] of Object.entries(autoMap)) {
+      if (d.gender === "♀") vComps.push({ compId: Number(c), count: d.names.length, parsed: d.parsed });
+      if (d.gender === "♂") mComps.push({ compId: Number(c), count: d.names.length, parsed: d.parsed });
+    }
+
+    // Sort by comp ID to maintain order
+    vComps.sort((a, b) => a.compId - b.compId);
+    mComps.sort((a, b) => a.compId - b.compId);
+
+    // Allround vrouwen distances in order: 500, 3000, 1500, 5000
+    const vDists = ["d1_500", "d1_3000", "d1_1500", "d1_5000"];
+    const mDists = ["d1_500", "d1_5000", "d1_1500", "d1_10000"];
+
+    console.log("[Klassement] Auto-fix: vrouwen comps:", vComps.map(c => c.compId));
+    console.log("[Klassement] Auto-fix: mannen comps:", mComps.map(c => c.compId));
+
+    // Assign in order
+    for (let i = 0; i < Math.min(vComps.length, vDists.length); i++) {
+      LIVE_URLS.allround.v[vDists[i]] = { compId: vComps[i].compId };
+    }
+    for (let i = 0; i < Math.min(mComps.length, mDists.length); i++) {
+      LIVE_URLS.allround.m[mDists[i]] = { compId: mComps[i].compId };
+    }
+
+    console.log("[Klassement] New LIVE_URLS.allround:", JSON.stringify(LIVE_URLS.allround));
+    showToast("Mapping gefixt! Data wordt herladen...");
+
+    // Reload data
+    loadData().then(() => {
+      render();
+      openDebugPanel(); // Refresh debug panel
+    });
+  });
 }
 
 // ── CSV Export ─────────────────────────────────────────
