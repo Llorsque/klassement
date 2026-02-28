@@ -602,7 +602,7 @@ function getPairNumber(startlist, name) {
 // ── Live Data: State ───────────────────────────────────
 let dataSource = "waiting"; // "live" | "waiting" | "manual"
 let pollTimer = null;
-const POLL_INTERVAL = 30_000; // 30 seconds (matches cache TTL)
+const POLL_INTERVAL = 15_000; // 15 seconds
 let lastFetchLog = [];
 
 // ── Manual Times Entry ────────────────────────────────
@@ -665,7 +665,7 @@ function parsePastedResults(text) {
 // API: live-api.schaatsen.nl — the actual JSON backend behind liveresults.schaatsen.nl
 // Aggressive cache: 30s TTL to avoid CORS proxy rate limiting
 const _fetchCache = {}; // key → { data, ts }
-const FETCH_CACHE_TTL = 30_000; // 30 seconds
+const FETCH_CACHE_TTL = 12_000; // 12 seconds
 
 async function fetchCompetitionResults(eventId, compId) {
   const cacheKey = `${eventId}_${compId}`;
@@ -677,9 +677,17 @@ async function fetchCompetitionResults(eventId, compId) {
 
   const url = `${API_BASE}/events/${eventId}/competitions/${compId}/results/?inSeconds=1`;
 
-  // 1. Try direct fetch first (works if no CORS restriction)
+  // Timeout helper
+  function timedFetch(u, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(u, { signal: ctrl.signal, headers: { Accept: "application/json" } })
+      .finally(() => clearTimeout(t));
+  }
+
+  // 1. Try direct
   try {
-    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+    const resp = await timedFetch(url, 4000);
     if (resp.ok) {
       const data = await resp.json();
       _fetchCache[cacheKey] = { data, ts: Date.now() };
@@ -688,7 +696,7 @@ async function fetchCompetitionResults(eventId, compId) {
     }
   } catch (_) {}
 
-  // 2. CORS proxy fallback — try multiple proxies sequentially
+  // 2. CORS proxy fallback
   const proxies = [
     `https://corsproxy.io/?${encodeURIComponent(url)}`,
     `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
@@ -697,7 +705,7 @@ async function fetchCompetitionResults(eventId, compId) {
 
   for (const proxyUrl of proxies) {
     try {
-      const resp = await fetch(proxyUrl);
+      const resp = await timedFetch(proxyUrl, 6000);
       if (!resp.ok) continue;
       const text = await resp.text();
       if (!text || text.length < 10) continue;
@@ -731,17 +739,16 @@ async function prefetchEvent(eventId) {
   for (const c of missing) {
     await fetchCompetitionResults(eventId, c);
     if (!_fetchCache[`${eventId}_${c}`]?.data) failed.push(c);
-    // 500ms delay between requests to stay under proxy rate limit
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 250)); // 250ms between requests
   }
 
-  // Retry failed comps once (different proxy might work after cooldown)
+  // Retry failed comps once
   if (failed.length > 0) {
     console.log(`[Klassement] Retrying ${failed.length} failed comps: [${failed.join(",")}]`);
-    await new Promise(r => setTimeout(r, 1000)); // extra pause
+    await new Promise(r => setTimeout(r, 500));
     for (const c of failed) {
       await fetchCompetitionResults(eventId, c);
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 300));
     }
   }
 
