@@ -711,16 +711,31 @@ function parseKnsbResponse(data) {
   if (!Array.isArray(results) || results.length === 0) return null;
 
   return results.map((r, idx) => {
-    // Try various field names
-    const name = r.name ?? r.Name ?? r.skaterName ?? r.skater?.name
-      ?? r.fullName ?? r.FullName ?? r.displayName ?? `Skater ${idx + 1}`;
+    // KNSB API: name is nested in competitor.skater.firstName + lastName
+    const skater = r.competitor?.skater ?? r.skater ?? null;
+    let name;
+    if (skater?.firstName && skater?.lastName) {
+      name = `${skater.firstName} ${skater.lastName}`;
+    } else if (skater?.name) {
+      name = skater.name;
+    } else {
+      name = r.name ?? r.Name ?? r.skaterName ?? r.fullName ?? r.FullName
+        ?? r.displayName ?? `Skater ${idx + 1}`;
+    }
 
     const time = r.time ?? r.Time ?? r.result ?? r.Result ?? r.finishTime
       ?? r.finish ?? r.Finish ?? r.raceTime ?? null;
 
-    const statusRaw = r.status ?? r.Status ?? r.raceStatus ?? "OK";
+    // KNSB API uses numeric status: 0 = OK, others = DNS/DNF/DQ
+    const statusRaw = r.status ?? r.Status ?? r.raceStatus ?? 0;
     let status = "OK";
-    if (typeof statusRaw === "string") {
+    if (typeof statusRaw === "number") {
+      // 0 = finished OK, 1 = DNS, 2 = DNF, 3 = DQ (KNSB convention)
+      if (statusRaw === 1) status = "DNS";
+      else if (statusRaw === 2) status = "DNF";
+      else if (statusRaw === 3) status = "DQ";
+      else if (statusRaw !== 0 && !time) status = "DNS";
+    } else if (typeof statusRaw === "string") {
       const s = statusRaw.toUpperCase();
       if (s.includes("DNS")) status = "DNS";
       else if (s.includes("DNF")) status = "DNF";
@@ -728,27 +743,24 @@ function parseKnsbResponse(data) {
     }
     if (!time && status === "OK") status = "DNS";
 
-    const skaterId = r.id ?? r.Id ?? r.skaterId ?? r.skater?.id ?? r.participantId ?? `live_${idx}`;
+    const skaterId = r.id ?? r.Id ?? skater?.id ?? r.participantId ?? `live_${idx}`;
 
-    // PB (personal best / persoonlijk record) detection
-    // Can be a boolean, a string "PB"/"PR", a nested object, or a remarks field
+    // PB detection — check medal field (KNSB uses "PB" in medal or remarks)
     let pb = false;
     const pbField = r.pb ?? r.PB ?? r.personalBest ?? r.PersonalBest
       ?? r.isPB ?? r.isPb ?? r.pr ?? r.PR ?? r.isPersonalRecord
       ?? r.personalRecord ?? r.seasonBest ?? r.SB ?? null;
     if (pbField === true || pbField === 1) pb = true;
     else if (typeof pbField === "string" && pbField.length > 0) pb = true;
-    // Check remarks/tags/notes fields for "PB" or "PR" text
+    // Check medal field for PB indicator
+    if (!pb && r.medal) {
+      if (typeof r.medal === "string" && /PB|PR/i.test(r.medal)) pb = true;
+    }
+    // Check remarks/tags/notes fields
     if (!pb) {
       const remarks = String(r.remarks ?? r.Remarks ?? r.note ?? r.notes
         ?? r.tags ?? r.tag ?? r.label ?? r.labels ?? r.annotation ?? "");
       if (/\bPB\b|\bPR\b|\bpersonal\s*(best|record)\b/i.test(remarks)) pb = true;
-    }
-    // Check if any field in the object contains the literal string "PB"
-    if (!pb) {
-      for (const v of Object.values(r)) {
-        if (typeof v === "string" && /\bPB\b/.test(v)) { pb = true; break; }
-      }
     }
 
     return { skaterId: String(skaterId), name: String(name), time: time ? String(time) : null, status, pb };
@@ -2455,7 +2467,7 @@ async function openDebugPanel() {
       if (parsed && parsed.length > 0) {
         html += `<div style="color:#68D391">${parsed.length} resultaten geparsed</div>`;
         for (const r of parsed.slice(0, 5)) {
-          html += `<div style="color:#fff;font-size:11px">${esc(r.name)} → ${esc(r.time)} (status: ${esc(r.status)}, pb: ${r.pb})</div>`;
+          html += `<div style="color:#fff;font-size:11px">${esc(r.name)} → ${esc(r.time ?? "geen tijd")} (status: ${esc(r.status)}, pb: ${r.pb})</div>`;
         }
       } else {
         html += `<div style="color:#FC8181">❌ Parser retourneerde null/leeg! Data structuur niet herkend.</div>`;
