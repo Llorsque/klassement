@@ -96,6 +96,15 @@
           </button>
         </div>
       </section>
+
+      <!-- Manual Entry -->
+      <section class="panel__block">
+        <div class="panel__label">Tijden invoeren</div>
+        <p class="panel__desc">Live data niet beschikbaar? Voer tijden handmatig in of plak resultaten.</p>
+        <button class="cta cta--entry" id="openEntryBtn" type="button">
+          ⚡ Invoer
+        </button>
+      </section>
     </aside>
 
     <section class="stage">
@@ -114,6 +123,14 @@
     <div class="popup">
       <button class="popup__close" id="popupClose" type="button" aria-label="Sluiten">&times;</button>
       <div class="popup__content" id="popupContent"></div>
+    </div>
+  </div>
+
+  <!-- Manual Entry Modal -->
+  <div class="popup-overlay" id="entryModal" hidden>
+    <div class="popup popup--entry">
+      <button class="popup__close" id="entryModalClose" type="button" aria-label="Sluiten">&times;</button>
+      <div class="popup__content" id="entryModalContent"></div>
     </div>
   </div>
 

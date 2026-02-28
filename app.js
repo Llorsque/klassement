@@ -307,7 +307,7 @@ const LIVE_URLS = {
   },
 };
 
-const API_BASE = "https://liveresults.schaatsen.nl";
+const API_BASE = "https://live-api.schaatsen.nl";
 
 // ── Participant Registry ──────────────────────────────
 // Source: Deelnemerslijst Daikin - NK Sprint 2026 (24-02-2026)
@@ -523,7 +523,7 @@ const STARTLISTS = {
     "Tijmen Snel", "Kayo Vos",
   ],
   // Day 2 startlists (1500m allround, 2e 500/1000 sprint) will be
-  // auto-captured from liveresults.schaatsen.nl API when available
+  // auto-captured from live-api.schaatsen.nl API when available
 };
 
 // Get startlist for a specific distance
@@ -541,67 +541,152 @@ function getPairNumber(startlist, name) {
 }
 
 // ── Live Data: State ───────────────────────────────────
-let dataSource = "waiting"; // "live" | "waiting"
+let dataSource = "waiting"; // "live" | "waiting" | "manual"
 let pollTimer = null;
 const POLL_INTERVAL = 2_000; // 2 seconds
 let lastFetchLog = [];
 
-// ── Live Data: Fetch single competition results ────────
-// The KNSB site is a SPA. We try multiple API patterns to find the data.
-async function fetchCompetitionResults(eventId, compId) {
-  const apiPatterns = [
-    `${API_BASE}/api/events/${eventId}/competition/${compId}/results`,
-    `${API_BASE}/api/events/${eventId}/competitions/${compId}`,
-    `${API_BASE}/api/v1/events/${eventId}/competition/${compId}/results`,
-    `${API_BASE}/api/v1/events/${eventId}/competitions/${compId}`,
-    `${API_BASE}/events/${eventId}/competition/${compId}/results.json`,
-  ];
-
-  for (const url of apiPatterns) {
-    try {
-      const resp = await fetch(url, {
-        headers: { "Accept": "application/json" },
-        mode: "cors",
-      });
-      if (!resp.ok) continue;
-      const ct = resp.headers.get("content-type") ?? "";
-      if (!ct.includes("json")) continue;
-      const data = await resp.json();
-      lastFetchLog.push({ eventId, compId, url, status: "ok" });
-      return data;
-    } catch (_) { /* try next */ }
-  }
-
-  // Fallback: try fetching the HTML page itself with Accept: json
+// ── Manual Times Entry ────────────────────────────────
+// Stored as: MANUAL_TIMES[module_gender_distKey][normalizedName] = "1:16.23"
+let MANUAL_TIMES = {};
+function loadManualTimes() {
   try {
-    const htmlUrl = `${API_BASE}/events/${eventId}/competition/${compId}/results`;
-    const resp = await fetch(htmlUrl, {
-      headers: { "Accept": "application/json, text/html" },
-      mode: "cors",
+    const raw = localStorage.getItem("klassement_manual_times");
+    if (raw) MANUAL_TIMES = JSON.parse(raw);
+  } catch (_) { MANUAL_TIMES = {}; }
+}
+function saveManualTimes() {
+  try {
+    localStorage.setItem("klassement_manual_times", JSON.stringify(MANUAL_TIMES));
+  } catch (_) {}
+}
+function setManualTime(moduleKey, genderKey, distKey, name, timeStr) {
+  const k = `${moduleKey}_${genderKey}_${distKey}`;
+  if (!MANUAL_TIMES[k]) MANUAL_TIMES[k] = {};
+  const n = name.trim().toLowerCase();
+  if (timeStr && timeStr.trim() && timeStr.trim() !== "—") {
+    MANUAL_TIMES[k][n] = timeStr.trim();
+  } else {
+    delete MANUAL_TIMES[k][n];
+  }
+  saveManualTimes();
+}
+function getManualTime(moduleKey, genderKey, distKey, name) {
+  const k = `${moduleKey}_${genderKey}_${distKey}`;
+  return MANUAL_TIMES[k]?.[name.trim().toLowerCase()] ?? null;
+}
+function hasAnyManualTimes() {
+  return Object.values(MANUAL_TIMES).some(dist => Object.keys(dist).length > 0);
+}
+// Parse pasted results block: tries to match "name  time" patterns
+function parsePastedResults(text) {
+  const results = [];
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    // Match patterns like:
+    // "1  Bergsma  37.45" or "Bergsma 37.45" or "1 Jorrit Bergsma 37.45"
+    // Time pattern: digits with . or : separators, at least one digit
+    const timeMatch = line.match(/(\d{1,2}[:.]\d{2}[:.]\d{2}|\d{1,2}[:.]\d{2,3}|\d{2}[,.]\d{2,3})$/);
+    if (!timeMatch) continue;
+    const time = timeMatch[1].replace(",", ".");
+    // Everything before the time (minus trailing spaces) is the name part
+    let namePart = line.slice(0, timeMatch.index).trim();
+    // Remove leading rank number if present
+    namePart = namePart.replace(/^\d+[\s.)\-]+/, "").trim();
+    // Remove pair/lane info like "(W)" or "(R)" or "[1]"
+    namePart = namePart.replace(/\s*[\(\[][^)\]]*[\)\]]\s*/g, " ").trim();
+    if (namePart.length > 2) {
+      results.push({ name: namePart, time });
+    }
+  }
+  return results;
+}
+
+// ── Live Data: Fetch single competition results ────────
+// API: live-api.schaatsen.nl — the actual JSON backend behind liveresults.schaatsen.nl
+async function fetchCompetitionResults(eventId, compId) {
+  // Primary endpoint (discovered from network tab)
+  const url = `${API_BASE}/events/${eventId}/competitions/${compId}/results/?inSeconds=1`;
+
+  // 1. Try direct fetch first
+  try {
+    const resp = await fetch(url, {
+      headers: { "Accept": "application/json" },
     });
     if (resp.ok) {
-      const ct = resp.headers.get("content-type") ?? "";
-      if (ct.includes("json")) {
-        const data = await resp.json();
-        lastFetchLog.push({ compId, url: htmlUrl, status: "ok (html endpoint)" });
-        return data;
-      }
-      // Try to find embedded JSON state in HTML (many SPAs embed initial state)
-      const html = await resp.text();
-      const stateMatch = html.match(/__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/)
-        || html.match(/window\.__DATA__\s*=\s*(\{[\s\S]*?\});/)
-        || html.match(/<script[^>]*>.*?("results"|"competitors")[\s\S]*?<\/script>/);
-      if (stateMatch?.[1]) {
+      const data = await resp.json();
+      lastFetchLog.push({ compId, url, status: "ok (direct)" });
+      return data;
+    }
+  } catch (err) {
+    // CORS or network error — try proxy fallback
+    if (!fetchCompetitionResults._corsWarn) {
+      console.warn(`[Klassement] Direct fetch blocked (CORS?), trying proxies...`, err.message);
+      fetchCompetitionResults._corsWarn = true;
+    }
+  }
+
+  // 2. CORS proxy fallback (needed when running from file:// or different origin)
+  const proxies = [
+    (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  ];
+  for (const proxyFn of proxies) {
+    try {
+      const proxyUrl = proxyFn(url);
+      const resp = await fetch(proxyUrl);
+      if (resp.ok) {
+        const text = await resp.text();
         try {
-          const data = JSON.parse(stateMatch[1]);
-          lastFetchLog.push({ compId, url: htmlUrl, status: "ok (embedded state)" });
+          const data = JSON.parse(text);
+          lastFetchLog.push({ compId, url, status: "ok (proxied)" });
           return data;
         } catch (_) {}
       }
+    } catch (_) {}
+  }
+
+  lastFetchLog.push({ compId, url, status: "failed" });
+  return null;
+}
+
+// Also fetch personal bests for PB detection
+async function fetchPersonalBests(eventId, compId) {
+  try {
+    const url = `${API_BASE}/events/${eventId}/competitions/${compId}/personal-bests/?inSeconds=1`;
+    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (resp.ok) return await resp.json();
+  } catch (_) {}
+  return null;
+}
+
+// Auto-discover competitions for an event (maps comp names to IDs)
+async function fetchChampionships(eventId) {
+  try {
+    const url = `${API_BASE}/events/${eventId}/championships/`;
+    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (resp.ok) {
+      const data = await resp.json();
+      console.log(`[Klassement] 📋 Championships for ${eventId}:`, data);
+      return data;
     }
   } catch (_) {}
+  return null;
+}
 
-  lastFetchLog.push({ compId, status: "failed" });
+// Fetch championships list to auto-discover comp ID → distance mapping
+async function fetchChampionships(eventId) {
+  try {
+    const url = `${API_BASE}/events/${eventId}/championships/`;
+    const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (resp.ok) {
+      const data = await resp.json();
+      console.log(`[Klassement] Championships for ${eventId}:`, data);
+      return data;
+    }
+  } catch (err) {
+    console.log(`[Klassement] Championships fetch failed:`, err.message);
+  }
   return null;
 }
 
@@ -804,6 +889,7 @@ async function loadData() {
     }
 
     // Update baseline athletes with live times
+    let mergedCount = 0;
     for (const ba of baseline.athletes) {
       const live = liveMap.get(normalize(ba.name));
       if (live) {
@@ -813,6 +899,7 @@ async function loadData() {
             ba.times[d.key] = live.times[d.key];
             ba.status[d.key] = live.status?.[d.key] ?? "OK";
             ba.pb[d.key] = live.pb?.[d.key] ?? false;
+            mergedCount++;
           }
         }
         liveMap.delete(normalize(ba.name)); // consumed
@@ -820,22 +907,43 @@ async function loadData() {
     }
 
     // Any live athletes NOT in participant list? Ignore them (participant list is truth).
-    // But log for debugging.
     if (liveMap.size > 0) {
       console.log("[Klassement] Live athletes not in participant list (ignored):",
         [...liveMap.values()].map(a => a.name));
     }
 
     dataSource = "live";
-    console.log("[Klassement] Live data merged", lastFetchLog);
+    console.log(`[Klassement] ✅ Live data merged: ${mergedCount} results from ${liveData.athletes.length} athletes`);
   } else {
     dataSource = "waiting";
+    // Log what happened
+    const failed = lastFetchLog.filter(l => l.status === "failed").length;
+    const ok = lastFetchLog.filter(l => l.status?.startsWith("ok")).length;
     if (lastFetchLog.length > 0) {
-      console.log("[Klassement] No live data yet, showing participant list", lastFetchLog);
+      console.log(`[Klassement] ⏳ Polling: ${ok} OK, ${failed} failed of ${lastFetchLog.length} endpoints`, lastFetchLog);
     }
   }
 
   state.resultsRaw = baseline;
+
+  // 4. Merge manual times (overrides live data — user is source of truth)
+  let manualCount = 0;
+  for (const ba of baseline.athletes) {
+    const n = normalize(ba.name);
+    for (const d of cfg.distances) {
+      const mt = getManualTime(m, g, d.key, ba.name);
+      if (mt) {
+        ba.times[d.key] = mt;
+        ba.status[d.key] = "OK";
+        manualCount++;
+      }
+    }
+  }
+  if (manualCount > 0) {
+    dataSource = "manual";
+    console.log(`[Klassement] ✏️ Manual times applied: ${manualCount}`);
+  }
+
   state.standings = computeStandings(state.resultsRaw, cfg.distances);
   resultsCache[`${m}_${g}`] = { raw: state.resultsRaw, standings: state.standings };
   updateStatusBadge();
@@ -847,10 +955,14 @@ function updateStatusBadge() {
   if (dataSource === "live") {
     badge.innerHTML = '<span class="status-badge__pulse status-badge__pulse--live"></span>Live';
     badge.classList.add("status-badge--live");
-    badge.classList.remove("status-badge--mock");
+    badge.classList.remove("status-badge--mock", "status-badge--manual");
+  } else if (dataSource === "manual") {
+    badge.innerHTML = '<span class="status-badge__pulse status-badge__pulse--manual"></span>Handmatig';
+    badge.classList.add("status-badge--manual");
+    badge.classList.remove("status-badge--live", "status-badge--mock");
   } else {
     badge.innerHTML = '<span class="status-badge__pulse"></span>Wachten op data';
-    badge.classList.remove("status-badge--live");
+    badge.classList.remove("status-badge--live", "status-badge--manual");
     badge.classList.add("status-badge--mock");
   }
 }
@@ -1503,7 +1615,7 @@ function renderStandingsView(distances, standings) {
       <strong>Leeswijzer:</strong> De tijden zijn de werkelijke wedstrijdtijden.
       Punten = tijd ÷ (meters ÷ 500), afgekapt op 3 decimalen. Laagste totaal = leider.
       Achterstand toont hoeveel seconden je sneller moet rijden op de gekozen afstand om de leider in te halen.
-      ${dataSource === "live" ? "<br><strong>Databron:</strong> liveresults.schaatsen.nl — automatisch bijgewerkt elke 2 sec." : "<br><strong>Databron:</strong> Wachten op live data van liveresults.schaatsen.nl."}
+      ${dataSource === "live" ? "<br><strong>Databron:</strong> live-api.schaatsen.nl — automatisch bijgewerkt elke 2 sec." : "<br><strong>Databron:</strong> Wachten op live data van live-api.schaatsen.nl."}
     </div>`;
 
   // Bind inline distance picker
@@ -2055,6 +2167,214 @@ function renderKwalificatieView() {
   el.contentArea.innerHTML = html;
 }
 
+// ── Manual Entry Modal ────────────────────────────────
+let entryModalDist = null; // current distance key being edited
+let entryModalMode = "fields"; // "fields" | "paste"
+
+function openEntryModal(distKey) {
+  const cfg = getActiveConfig();
+  const dist = distKey ? cfg.distances.find(d => d.key === distKey) : cfg.distances[0];
+  if (!dist) return;
+  entryModalDist = dist.key;
+  entryModalMode = "fields";
+  renderEntryModal();
+  document.getElementById("entryModal").hidden = false;
+}
+
+function closeEntryModal() {
+  document.getElementById("entryModal").hidden = true;
+}
+
+function renderEntryModal() {
+  const modal = document.getElementById("entryModalContent");
+  if (!modal) return;
+  const m = state.selectedModule;
+  const g = state.selectedGender;
+  const cfg = getActiveConfig();
+  const dist = cfg.distances.find(d => d.key === entryModalDist) ?? cfg.distances[0];
+  const participants = PARTICIPANTS[m]?.[g] ?? [];
+  const startlist = getStartlist(m, g, dist.key);
+
+  // Sort by startlist order if available
+  let ordered = [...participants];
+  if (startlist) {
+    const orderMap = new Map();
+    startlist.forEach((name, idx) => orderMap.set(name.toLowerCase(), idx));
+    ordered.sort((a, b) => {
+      const oa = orderMap.get(a.name.toLowerCase()) ?? 999;
+      const ob = orderMap.get(b.name.toLowerCase()) ?? 999;
+      return oa - ob;
+    });
+  }
+
+  // Distance tabs
+  const distTabs = cfg.distances.map(d => {
+    const hasData = (MANUAL_TIMES[`${m}_${g}_${d.key}`] && Object.keys(MANUAL_TIMES[`${m}_${g}_${d.key}`]).length > 0);
+    const active = d.key === entryModalDist ? "entry-tab--active" : "";
+    const dot = hasData ? '<span class="entry-tab__dot"></span>' : "";
+    return `<button class="entry-tab ${active}" data-dist="${d.key}">${dot}${esc(d.label)}</button>`;
+  }).join("");
+
+  // Mode tabs
+  const fieldsActive = entryModalMode === "fields" ? "entry-mode--active" : "";
+  const pasteActive = entryModalMode === "paste" ? "entry-mode--active" : "";
+
+  let bodyHtml = "";
+
+  if (entryModalMode === "fields") {
+    // Per-athlete time fields
+    const rows = ordered.map((p, idx) => {
+      const pair = getPairNumber(startlist, p.name);
+      const pairLabel = pair !== null ? `Rit ${pair}` : "";
+      const current = getManualTime(m, g, dist.key, p.name) ?? "";
+      return `<div class="entry-row">
+        <span class="entry-row__pair">${esc(pairLabel)}</span>
+        <span class="entry-row__name">${esc(p.name)}</span>
+        <input class="entry-row__input" type="text" placeholder="0:00.00" value="${esc(current)}"
+               data-athlete="${esc(p.name)}" data-idx="${idx}" />
+      </div>`;
+    }).join("");
+
+    bodyHtml = `<div class="entry-fields">${rows}</div>`;
+  } else {
+    // Paste mode
+    bodyHtml = `<div class="entry-paste">
+      <p class="entry-paste__hint">Plak de resultaten van live-api.schaatsen.nl hieronder.<br>
+      Formaat: <code>Naam  Tijd</code> per regel (bijv. <code>Jorrit Bergsma  37.45</code>)</p>
+      <textarea class="entry-paste__area" id="entryPasteArea" rows="12"
+        placeholder="1  Jorrit Bergsma  37.45&#10;2  Marcel Bosker  37.89&#10;..."></textarea>
+      <button class="cta cta--small" id="entryPasteApply">
+        Verwerk &amp; sla op
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>`;
+  }
+
+  // Count entered times
+  const dk = `${m}_${g}_${dist.key}`;
+  const enteredCount = MANUAL_TIMES[dk] ? Object.keys(MANUAL_TIMES[dk]).length : 0;
+  const totalAthletes = participants.length;
+
+  modal.innerHTML = `
+    <div class="entry-header">
+      <div>
+        <div class="entry-header__title">⚡ Tijd invoeren</div>
+        <div class="entry-header__sub">${esc(MODULE_CONFIG[m].label)} — ${esc(cfg.label)} — ${esc(dist.label)}</div>
+      </div>
+      <span class="entry-header__count">${enteredCount}/${totalAthletes}</span>
+    </div>
+    <div class="entry-tabs">${distTabs}</div>
+    <div class="entry-modes">
+      <button class="entry-mode ${fieldsActive}" data-mode="fields">Per rijder</button>
+      <button class="entry-mode ${pasteActive}" data-mode="paste">Plak resultaten</button>
+    </div>
+    ${bodyHtml}
+    <div class="entry-footer">
+      <button class="entry-clear" id="entryClear">Wis deze afstand</button>
+      <button class="cta" id="entryClose">Sluiten</button>
+    </div>`;
+
+  // Bind events
+  modal.querySelectorAll(".entry-tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      entryModalDist = btn.dataset.dist;
+      renderEntryModal();
+    });
+  });
+  modal.querySelectorAll(".entry-mode").forEach(btn => {
+    btn.addEventListener("click", () => {
+      entryModalMode = btn.dataset.mode;
+      renderEntryModal();
+    });
+  });
+  modal.querySelector("#entryClose")?.addEventListener("click", () => {
+    closeEntryModal();
+    loadData().then(() => render());
+  });
+  modal.querySelector("#entryClear")?.addEventListener("click", () => {
+    const dk = `${m}_${g}_${entryModalDist}`;
+    MANUAL_TIMES[dk] = {};
+    saveManualTimes();
+    renderEntryModal();
+    showToast("Tijden gewist voor " + (cfg.distances.find(d => d.key === entryModalDist)?.label ?? ""));
+  });
+
+  // Field mode: bind input events
+  if (entryModalMode === "fields") {
+    const inputs = modal.querySelectorAll(".entry-row__input");
+    inputs.forEach(inp => {
+      // Save on blur or Enter
+      const save = () => {
+        const name = inp.dataset.athlete;
+        const val = inp.value.trim();
+        setManualTime(m, g, entryModalDist, name, val);
+        // Update count display
+        const dk = `${m}_${g}_${entryModalDist}`;
+        const ct = MANUAL_TIMES[dk] ? Object.keys(MANUAL_TIMES[dk]).length : 0;
+        const countEl = modal.querySelector(".entry-header__count");
+        if (countEl) countEl.textContent = `${ct}/${totalAthletes}`;
+        // Update dot on distance tab
+        const tab = modal.querySelector(`.entry-tab[data-dist="${entryModalDist}"]`);
+        if (tab && ct > 0 && !tab.querySelector(".entry-tab__dot")) {
+          tab.insertAdjacentHTML("afterbegin", '<span class="entry-tab__dot"></span>');
+        }
+      };
+      inp.addEventListener("blur", save);
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          save();
+          // Focus next input
+          const idx = parseInt(inp.dataset.idx);
+          const next = modal.querySelector(`.entry-row__input[data-idx="${idx + 1}"]`);
+          if (next) next.focus();
+          e.preventDefault();
+        }
+      });
+    });
+    // Auto-focus first empty input
+    const firstEmpty = [...inputs].find(i => !i.value);
+    if (firstEmpty) setTimeout(() => firstEmpty.focus(), 100);
+  }
+
+  // Paste mode: bind apply
+  if (entryModalMode === "paste") {
+    modal.querySelector("#entryPasteApply")?.addEventListener("click", () => {
+      const text = document.getElementById("entryPasteArea")?.value ?? "";
+      const parsed = parsePastedResults(text);
+      if (parsed.length === 0) {
+        showToast("Geen tijden gevonden in de tekst");
+        return;
+      }
+      // Match parsed names to participants using fuzzy matching
+      const normalize = (n) => n.trim().toLowerCase();
+      const pMap = new Map();
+      participants.forEach(p => pMap.set(normalize(p.name), p.name));
+
+      let matched = 0;
+      for (const r of parsed) {
+        // Try exact match first
+        let matchedName = pMap.get(normalize(r.name));
+        // Try partial match (last name only)
+        if (!matchedName) {
+          const rLast = r.name.split(/\s+/).pop()?.toLowerCase();
+          for (const [nk, nv] of pMap) {
+            if (nk.endsWith(rLast) || nk.includes(rLast)) {
+              matchedName = nv;
+              break;
+            }
+          }
+        }
+        if (matchedName) {
+          setManualTime(m, g, entryModalDist, matchedName, r.time);
+          matched++;
+        }
+      }
+      showToast(`${matched} van ${parsed.length} tijden verwerkt`);
+      renderEntryModal();
+    });
+  }
+}
+
 // ── CSV Export ─────────────────────────────────────────
 function exportCSV() {
   const cfg = getActiveConfig();
@@ -2113,6 +2433,27 @@ function bindEvents() {
   el.h2hTargetRider?.addEventListener("change", () => { state.h2h.targetRiderId = el.h2hTargetRider.value || null; render(); });
   el.h2hOpen?.addEventListener("click", e => { e.preventDefault(); state.selectedView = "headToHead"; render(); });
   el.exportBtn?.addEventListener("click", exportCSV);
+
+  // Manual Entry modal
+  document.getElementById("openEntryBtn")?.addEventListener("click", () => {
+    openEntryModal(state.selectedDistanceKey ?? null);
+  });
+  document.getElementById("entryModalClose")?.addEventListener("click", () => {
+    closeEntryModal();
+    loadData().then(() => render());
+  });
+  document.getElementById("entryModal")?.addEventListener("click", (e) => {
+    if (e.target.id === "entryModal") {
+      closeEntryModal();
+      loadData().then(() => render());
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !document.getElementById("entryModal")?.hidden) {
+      closeEntryModal();
+      loadData().then(() => render());
+    }
+  });
 }
 
 function resetViewState() {
@@ -2163,6 +2504,12 @@ async function boot() {
   cacheEls();
   bindEvents();
   initPopupHandlers();
+  loadManualTimes();
+
+  // Discover competition IDs from live API (logged to console)
+  fetchChampionships("2026_NED_0003").then(d => { if (d) console.log("[Klassement] NK Sprint championships:", d); });
+  fetchChampionships("2026_NED_0004").then(d => { if (d) console.log("[Klassement] NK Allround championships:", d); });
+
   await loadAndRender();
 }
 
