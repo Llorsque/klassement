@@ -372,7 +372,7 @@ const PARTICIPANTS = {
       { nr: 10, name: "Kim Talsma",                cat: "DSA", qual: "WC" },
       { nr: 11, name: "Meike Veen",                cat: "DN2", qual: "WC" },
       { nr: 12, name: "Gioya Lancee",              cat: "DSA", qual: "Kraantje Lek" },
-      { nr: 13, name: "Leonie Bats",               cat: "DSA", qual: "Kraantje Lek" },
+      { nr: 13, name: "Hilde Noppert",              cat: "DSA", qual: "Kraantje Lek" },
       { nr: 14, name: "Sanne Westra",              cat: "DN4", qual: "Kraantje Lek" },
       { nr: 15, name: "Rosalie van Vliet",         cat: "DN1", qual: "Kraantje Lek" },
       { nr: 16, name: "Evi de Ruijter",            cat: "DA2", qual: "Kraantje Lek" },
@@ -390,7 +390,7 @@ const PARTICIPANTS = {
       { nr: 6,  name: "Chris Brommersma",          cat: "HN2", qual: "Gruno Bokaal" },
       { nr: 7,  name: "Michiel de Groot",           cat: "HN2", qual: "Gruno Bokaal" },
       { nr: 8,  name: "Louis Hollaar",             cat: "HSA", qual: "WC" },
-      { nr: 9,  name: "Kars Jansman",              cat: "HSA", qual: "WC" },
+      { nr: 9,  name: "Jasper Tinga",              cat: "HN3", qual: "Eindhoven Trofee" },
       { nr: 10, name: "Remco Stam",                cat: "HN3", qual: "Eindhoven Trofee" },
       { nr: 11, name: "Remo Slotegraaf",           cat: "HSA", qual: "Eindhoven Trofee" },
       { nr: 12, name: "Jelle Koeleman",            cat: "HN3", qual: "Eindhoven Trofee" },
@@ -408,10 +408,10 @@ const PARTICIPANTS = {
 
 // Lookup helper: find participant info by name
 function findParticipant(name) {
-  const n = name.trim().toLowerCase();
+  const n = normalizeName(name);
   for (const [mod, genders] of Object.entries(PARTICIPANTS)) {
     for (const [gen, list] of Object.entries(genders)) {
-      const found = list.find(p => p.name.toLowerCase() === n);
+      const found = list.find(p => normalizeName(p.name) === n);
       if (found) return { ...found, module: mod, gender: gen };
     }
   }
@@ -429,7 +429,7 @@ const STARTLISTS = {
     "Evelien Vijn", "Naomi van der Werf",
     "Britt Breider", "Evi de Ruijter",
     "Kim Talsma", "Sanne Westra",
-    "Leonie Bats", "Merel Conijn",
+    "Hilde Noppert", "Merel Conijn",
     "Rosalie van Vliet", "Nynke Tinga",
     "Jade Groenewoud", "Amy van der Meer",
     "Melissa Wijfje", "Gioya Lancee",
@@ -440,7 +440,7 @@ const STARTLISTS = {
     "Tosca Mulder", "Maud Blokhorst",
     "Nynke Tinga", "Evi de Ruijter",
     "Naomi van der Werf", "Sanne Westra",
-    "Rosalie van Vliet", "Leonie Bats",
+    "Rosalie van Vliet", "Hilde Noppert",
     "Lieke Huizink", "Kim Talsma",
     "Jade Groenewoud", "Meike Veen",
     "Gioya Lancee", "Evelien Vijn",
@@ -451,7 +451,7 @@ const STARTLISTS = {
   allround_m_d1_500: [
     "Jorrit Bergsma", "Mathijs van Zwieten",
     "Jasper Krommenhoek", "Chris Brommersma",
-    "Pelle Bolsius", "Kars Jansman",
+    "Pelle Bolsius", "Jasper Tinga",
     "Michiel de Groot", "Remco Stam",
     "Remo Slotegraaf", "Beau Snellink",
     "Jelle Koeleman", "Edsger van Felius",
@@ -469,7 +469,7 @@ const STARTLISTS = {
     "Chris Brommersma", "Louis Hollaar",
     "Yves Vergeer", "Remo Slotegraaf",
     "Beau Snellink", "Jorrit Bergsma",
-    "Kars Jansman", "Jasper Krommenhoek",
+    "Jasper Tinga", "Jasper Krommenhoek",
     "Marcel Bosker", "Remco Stam",
   ],
   // ── NK Sprint Vrouwen ──
@@ -534,8 +534,8 @@ function getStartlist(moduleKey, genderKey, distKey) {
 // Get pair number for an athlete in a startlist (1-based)
 function getPairNumber(startlist, name) {
   if (!startlist) return null;
-  const n = name.trim().toLowerCase();
-  const idx = startlist.findIndex(s => s.toLowerCase() === n);
+  const n = normalizeName(name);
+  const idx = startlist.findIndex(s => normalizeName(s) === n);
   if (idx === -1) return null;
   return Math.floor(idx / 2) + 1;
 }
@@ -563,7 +563,7 @@ function saveManualTimes() {
 function setManualTime(moduleKey, genderKey, distKey, name, timeStr) {
   const k = `${moduleKey}_${genderKey}_${distKey}`;
   if (!MANUAL_TIMES[k]) MANUAL_TIMES[k] = {};
-  const n = name.trim().toLowerCase();
+  const n = normalizeName(name);
   if (timeStr && timeStr.trim() && timeStr.trim() !== "—") {
     MANUAL_TIMES[k][n] = timeStr.trim();
   } else {
@@ -573,7 +573,7 @@ function setManualTime(moduleKey, genderKey, distKey, name, timeStr) {
 }
 function getManualTime(moduleKey, genderKey, distKey, name) {
   const k = `${moduleKey}_${genderKey}_${distKey}`;
-  return MANUAL_TIMES[k]?.[name.trim().toLowerCase()] ?? null;
+  return MANUAL_TIMES[k]?.[normalizeName(name)] ?? null;
 }
 function hasAnyManualTimes() {
   return Object.values(MANUAL_TIMES).some(dist => Object.keys(dist).length > 0);
@@ -803,7 +803,7 @@ async function fetchLiveResults(moduleKey, genderKey) {
 
   // Merge: build athlete map across all distances
   const athleteMap = new Map(); // keyed by name (normalized)
-  const normalize = (n) => n.trim().toLowerCase();
+  const normalize = normalizeName;
 
   for (const { key, results } of allResults) {
     if (!results) continue;
@@ -881,6 +881,22 @@ function makeParticipantBaseline(moduleKey, genderKey) {
 const resultsCache = {}; // key: "sprint_m" etc → { raw, standings }
 
 // ── Data Loading ───────────────────────────────────────
+// Robust name normalization — handles apostrophe variants, extra spaces, accents
+function normalizeName(n) {
+  return n
+    .trim()
+    .toLowerCase()
+    // Normalize all apostrophe/quote variants to standard '
+    .replace(/[\u2018\u2019\u201A\u201B\u0060\u00B4\u2032\u02BC\u02BB\u2060']/g, "'")
+    // Normalize dashes
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015]/g, "-")
+    // Collapse multiple spaces
+    .replace(/\s+/g, " ")
+    // Remove accents/diacritics
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
 // Simple Levenshtein distance for fuzzy name matching debug
 function levenshtein(a, b) {
   const m = a.length, n = b.length;
@@ -899,7 +915,7 @@ async function loadData() {
 
   // 1. Start with participant baseline (all names, no times)
   const baseline = makeParticipantBaseline(m, g);
-  const normalize = (n) => n.trim().toLowerCase();
+  const normalize = normalizeName;
 
   // 2. Try fetching live data
   const liveData = await fetchLiveResults(m, g);
@@ -968,6 +984,12 @@ async function loadData() {
 
     dataSource = "live";
     console.log(`[Klassement] ✅ Live data merged: ${mergedCount} results from ${liveData.athletes.length} athletes`);
+    // Log match details
+    const matched = baseline.athletes.filter(ba => cfg.distances.some(d => ba.times[d.key]));
+    const unmatched = baseline.athletes.filter(ba => !cfg.distances.some(d => ba.times[d.key]));
+    if (unmatched.length > 0) {
+      console.warn(`[Klassement] ⚠️ ${unmatched.length} deelnemers zonder live data:`, unmatched.map(a => a.name));
+    }
   } else {
     dataSource = "waiting";
     // Log what happened
@@ -1435,10 +1457,10 @@ function renderDistanceView(dist, standings) {
   // Sort unfinished by startlist pair order (if available), otherwise keep original order
   if (startlist) {
     const orderMap = new Map();
-    startlist.forEach((name, idx) => orderMap.set(name.toLowerCase(), idx));
+    startlist.forEach((name, idx) => orderMap.set(normalizeName(name), idx));
     withoutTime.sort((a, b) => {
-      const oa = orderMap.get(a.name.toLowerCase()) ?? 999;
-      const ob = orderMap.get(b.name.toLowerCase()) ?? 999;
+      const oa = orderMap.get(normalizeName(a.name)) ?? 999;
+      const ob = orderMap.get(normalizeName(b.name)) ?? 999;
       return oa - ob;
     });
   }
@@ -2253,10 +2275,10 @@ function renderEntryModal() {
   let ordered = [...participants];
   if (startlist) {
     const orderMap = new Map();
-    startlist.forEach((name, idx) => orderMap.set(name.toLowerCase(), idx));
+    startlist.forEach((name, idx) => orderMap.set(normalizeName(name), idx));
     ordered.sort((a, b) => {
-      const oa = orderMap.get(a.name.toLowerCase()) ?? 999;
-      const ob = orderMap.get(b.name.toLowerCase()) ?? 999;
+      const oa = orderMap.get(normalizeName(a.name)) ?? 999;
+      const ob = orderMap.get(normalizeName(b.name)) ?? 999;
       return oa - ob;
     });
   }
@@ -2400,7 +2422,7 @@ function renderEntryModal() {
         return;
       }
       // Match parsed names to participants using fuzzy matching
-      const normalize = (n) => n.trim().toLowerCase();
+      const normalize = normalizeName;
       const pMap = new Map();
       participants.forEach(p => pMap.set(normalize(p.name), p.name));
 
@@ -2449,8 +2471,8 @@ async function openDebugPanel() {
   }
 
   // Parse each and show names + auto-detect gender
-  const vNames = new Set(PARTICIPANTS.allround.v.map(p => p.name.trim().toLowerCase()));
-  const mNames = new Set(PARTICIPANTS.allround.m.map(p => p.name.trim().toLowerCase()));
+  const vNames = new Set(PARTICIPANTS.allround.v.map(p => normalizeName(p.name)));
+  const mNames = new Set(PARTICIPANTS.allround.m.map(p => normalizeName(p.name)));
 
   html += '<div style="margin:8px 0 4px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">NK Allround — Comp ID Auto-Detect</div>';
 
@@ -2464,8 +2486,8 @@ async function openDebugPanel() {
     // Match against participant lists
     let vMatch = 0, mMatch = 0;
     for (const n of names) {
-      if (vNames.has(n.trim().toLowerCase())) vMatch++;
-      if (mNames.has(n.trim().toLowerCase())) mMatch++;
+      if (vNames.has(normalizeName(n))) vMatch++;
+      if (mNames.has(normalizeName(n))) mMatch++;
     }
 
     // Auto-detect gender
@@ -2503,7 +2525,7 @@ async function openDebugPanel() {
   const m = state.selectedModule, g = state.selectedGender;
   const cfg = getActiveConfig();
   const partList = PARTICIPANTS[m]?.[g] ?? [];
-  const partNames = new Set(partList.map(p => p.name.trim().toLowerCase()));
+  const partNames = new Set(partList.map(p => normalizeName(p.name)));
 
   html += `<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Name Match: ${esc(m)} ${esc(g)} (${partList.length} deelnemers)</div>`;
 
@@ -2514,7 +2536,7 @@ async function openDebugPanel() {
     const parsed = parseKnsbResponse(compData[dd.compId]);
     if (!parsed) continue;
     for (const r of parsed) {
-      const nk = r.name.trim().toLowerCase();
+      const nk = normalizeName(r.name);
       if (!apiNames.has(nk)) apiNames.set(nk, { name: r.name, dists: [] });
       apiNames.get(nk).dists.push(dk);
     }
@@ -2524,7 +2546,7 @@ async function openDebugPanel() {
   let matchCount = 0;
   const unmatched = [];
   for (const p of partList) {
-    const nk = p.name.trim().toLowerCase();
+    const nk = normalizeName(p.name);
     if (apiNames.has(nk)) {
       matchCount++;
     } else {
