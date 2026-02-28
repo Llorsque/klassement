@@ -2375,6 +2375,140 @@ function renderEntryModal() {
   }
 }
 
+// ── Debug Panel ───────────────────────────────────────
+async function openDebugPanel() {
+  const panel = document.getElementById("debugPanel");
+  const content = document.getElementById("debugContent");
+  if (!panel || !content) return;
+  panel.hidden = false;
+
+  content.innerHTML = '<div style="color:#F6AD55">⏳ API tests worden uitgevoerd...</div>';
+
+  let html = '<div style="margin-bottom:12px;font-size:14px;font-weight:700;color:#fff">🔍 Debug Panel — API Tests</div>';
+
+  // Check if running from file:// (CORS will block!)
+  const proto = window.location.protocol;
+  if (proto === "file:") {
+    html += `<div style="padding:10px;margin-bottom:12px;background:rgba(252,129,129,.15);border:1px solid rgba(252,129,129,.3);border-radius:8px;color:#FC8181;font-size:13px">
+      <b>⚠️ CORS PROBLEEM:</b> Je opent dit bestand via <code>file://</code>. Browsers blokkeren API-calls naar externe sites vanuit lokale bestanden.<br><br>
+      <b>Oplossing:</b> Start een lokale server:<br>
+      <code style="background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px">python3 -m http.server 8080</code> in de map van het project, dan open <code>http://localhost:8080</code>
+    </div>`;
+  } else {
+    html += `<div style="margin-bottom:8px;color:#68D391">✅ Protocol: ${esc(proto)} — OK</div>`;
+  }
+
+  html += `<div style="margin-bottom:8px;color:var(--text-dim)">API Base: <b style="color:#fff">${esc(API_BASE)}</b></div>`;
+  html += `<div style="margin-bottom:12px;color:var(--text-dim)">Actief: <b style="color:#fff">${esc(state.selectedModule)} ${esc(state.selectedGender)}</b> | DataSource: <b style="color:#fff">${esc(dataSource)}</b></div>`;
+
+  // Test each event
+  const events = [
+    { id: "2026_NED_0004", label: "NK Allround" },
+    { id: "2026_NED_0003", label: "NK Sprint" },
+  ];
+
+  for (const evt of events) {
+    html += `<div style="margin:12px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">${esc(evt.label)} — ${esc(evt.id)}</div>`;
+
+    // Test comps 1 through 8
+    for (let compId = 1; compId <= 8; compId++) {
+      const url = `${API_BASE}/events/${evt.id}/competitions/${compId}/results/?inSeconds=1`;
+      let status = "", detail = "", color = "";
+      try {
+        const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+        if (resp.ok) {
+          const data = await resp.json();
+          // Show what we got
+          if (Array.isArray(data)) {
+            const names = data.slice(0, 3).map(r => {
+              const n = r.name ?? r.Name ?? r.firstName ?? r.skaterName ?? "?";
+              const t = r.time ?? r.Time ?? r.result ?? r.totalTime ?? "?";
+              return `${n}: ${t}`;
+            }).join(", ");
+            status = `✅ ${resp.status} — ${data.length} results`;
+            detail = names + (data.length > 3 ? ", ..." : "");
+            color = "#68D391";
+          } else if (data && typeof data === "object") {
+            const keys = Object.keys(data).slice(0, 5);
+            // Check for results array inside
+            const arr = data.results ?? data.Results ?? data.data ?? null;
+            if (Array.isArray(arr)) {
+              const names = arr.slice(0, 3).map(r => {
+                const n = r.name ?? r.Name ?? r.firstName ?? "?";
+                const t = r.time ?? r.Time ?? r.result ?? "?";
+                return `${n}: ${t}`;
+              }).join(", ");
+              status = `✅ ${resp.status} — obj.results: ${arr.length} items`;
+              detail = names;
+              color = "#68D391";
+            } else {
+              status = `⚠️ ${resp.status} — object (keys: ${keys.join(", ")})`;
+              detail = JSON.stringify(data).slice(0, 200);
+              color = "#F6AD55";
+            }
+          } else {
+            status = `⚠️ ${resp.status} — unexpected type: ${typeof data}`;
+            detail = String(data).slice(0, 100);
+            color = "#F6AD55";
+          }
+        } else {
+          status = `❌ HTTP ${resp.status}`;
+          try { detail = (await resp.text()).slice(0, 100); } catch(_) {}
+          color = "#FC8181";
+        }
+      } catch (err) {
+        status = `❌ FOUT: ${err.message}`;
+        detail = err.name === "TypeError" ? "Waarschijnlijk CORS-blokkade!" : "";
+        color = "#FC8181";
+      }
+
+      // Check what our mapping says this compId should be
+      let mapping = "—";
+      for (const [modKey, modData] of Object.entries(LIVE_URLS)) {
+        if (modData.eventId !== evt.id) continue;
+        for (const [genKey, genData] of Object.entries(modData)) {
+          if (genKey === "eventId") continue;
+          for (const [distKey, distData] of Object.entries(genData)) {
+            if (distData.compId === compId) {
+              const dist = MODULE_CONFIG[modKey]?.genders[genKey]?.distances.find(d => d.key === distKey);
+              mapping = `${genKey === "v" ? "♀" : "♂"} ${dist?.label ?? distKey}`;
+            }
+          }
+        }
+      }
+
+      html += `<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+        <div style="color:${color}"><b>Comp ${compId}</b> [Mapping: ${esc(mapping)}] — ${status}</div>
+        ${detail ? `<div style="color:var(--text-dim);font-size:11px;margin-top:2px;word-break:break-all">${esc(detail)}</div>` : ""}
+      </div>`;
+    }
+  }
+
+  // Show last fetch log
+  html += '<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Laatste fetch log</div>';
+  if (lastFetchLog.length === 0) {
+    html += '<div style="color:var(--text-dim)">Geen fetch pogingen gelogd</div>';
+  } else {
+    for (const log of lastFetchLog) {
+      const c = log.status?.startsWith("ok") ? "#68D391" : "#FC8181";
+      html += `<div style="padding:2px 0;color:${c}">[comp ${log.compId}] ${esc(log.status)} ${log.url ? "— " + esc(log.url) : ""}</div>`;
+    }
+  }
+
+  // Show manual times status
+  html += '<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Handmatige tijden</div>';
+  const mtKeys = Object.keys(MANUAL_TIMES).filter(k => Object.keys(MANUAL_TIMES[k]).length > 0);
+  if (mtKeys.length === 0) {
+    html += '<div style="color:var(--text-dim)">Geen handmatige tijden opgeslagen</div>';
+  } else {
+    for (const k of mtKeys) {
+      html += `<div style="color:#fff">${esc(k)}: ${Object.keys(MANUAL_TIMES[k]).length} tijden</div>`;
+    }
+  }
+
+  content.innerHTML = html;
+}
+
 // ── CSV Export ─────────────────────────────────────────
 function exportCSV() {
   const cfg = getActiveConfig();
@@ -2433,6 +2567,15 @@ function bindEvents() {
   el.h2hTargetRider?.addEventListener("change", () => { state.h2h.targetRiderId = el.h2hTargetRider.value || null; render(); });
   el.h2hOpen?.addEventListener("click", e => { e.preventDefault(); state.selectedView = "headToHead"; render(); });
   el.exportBtn?.addEventListener("click", exportCSV);
+
+  // Debug panel
+  document.getElementById("debugBtn")?.addEventListener("click", openDebugPanel);
+  document.getElementById("debugClose")?.addEventListener("click", () => {
+    document.getElementById("debugPanel").hidden = true;
+  });
+  document.getElementById("debugPanel")?.addEventListener("click", (e) => {
+    if (e.target.id === "debugPanel") document.getElementById("debugPanel").hidden = true;
+  });
 
   // Manual Entry modal
   document.getElementById("openEntryBtn")?.addEventListener("click", () => {

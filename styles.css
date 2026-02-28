@@ -813,6 +813,7 @@ body.popup-open { overflow: hidden; }
 
 /* ── Entry Modal ───────────────────────────────────── */
 .popup--entry { max-width: 560px; width: 92%; max-height: 85vh; }
+.popup--debug { max-width: 720px; width: 95%; max-height: 85vh; }
 .cta--entry {
   background: linear-gradient(135deg, #F6AD55, #ED8936);
   color: #1a1a2e;
