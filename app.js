@@ -2382,128 +2382,116 @@ async function openDebugPanel() {
   if (!panel || !content) return;
   panel.hidden = false;
 
-  content.innerHTML = '<div style="color:#F6AD55">⏳ API tests worden uitgevoerd...</div>';
+  content.innerHTML = '<div style="color:#F6AD55">⏳ API tests via proxy...</div>';
 
-  let html = '<div style="margin-bottom:12px;font-size:14px;font-weight:700;color:#fff">🔍 Debug Panel — API Tests</div>';
+  let html = '<div style="margin-bottom:12px;font-size:14px;font-weight:700;color:#fff">🔍 Debug — Live API + Data Flow</div>';
+  html += `<div style="margin-bottom:4px;color:var(--text-dim)">DataSource: <b style="color:#fff">${esc(dataSource)}</b> | Module: <b style="color:#fff">${esc(state.selectedModule)} ${esc(state.selectedGender)}</b></div>`;
 
-  // Check if running from file:// (CORS will block!)
-  const proto = window.location.protocol;
-  if (proto === "file:") {
-    html += `<div style="padding:10px;margin-bottom:12px;background:rgba(252,129,129,.15);border:1px solid rgba(252,129,129,.3);border-radius:8px;color:#FC8181;font-size:13px">
-      <b>⚠️ CORS PROBLEEM:</b> Je opent dit bestand via <code>file://</code>. Browsers blokkeren API-calls naar externe sites vanuit lokale bestanden.<br><br>
-      <b>Oplossing:</b> Start een lokale server:<br>
-      <code style="background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px">python3 -m http.server 8080</code> in de map van het project, dan open <code>http://localhost:8080</code>
-    </div>`;
-  } else {
-    html += `<div style="margin-bottom:8px;color:#68D391">✅ Protocol: ${esc(proto)} — OK</div>`;
+  // Show current standings count
+  const sAll = state.standings?.all ?? [];
+  const withTimes = sAll.filter(a => a.completedCount > 0);
+  html += `<div style="margin-bottom:12px;color:var(--text-dim)">Standings: <b style="color:#fff">${sAll.length} atleten, ${withTimes.length} met tijden</b></div>`;
+
+  // If we have standings with times, show them
+  if (withTimes.length > 0) {
+    html += '<div style="margin:8px 0 4px;font-weight:700;color:#68D391">Huidige data in app:</div>';
+    for (const a of withTimes.slice(0, 5)) {
+      const times = Object.entries(a.times ?? {}).filter(([,v]) => v).map(([k,v]) => `${k}=${v}`).join(", ");
+      html += `<div style="color:#fff;font-size:11px">${esc(a.name)}: ${esc(times)}</div>`;
+    }
+    if (withTimes.length > 5) html += `<div style="color:var(--text-dim)">... +${withTimes.length - 5} meer</div>`;
   }
 
-  html += `<div style="margin-bottom:8px;color:var(--text-dim)">API Base: <b style="color:#fff">${esc(API_BASE)}</b></div>`;
-  html += `<div style="margin-bottom:12px;color:var(--text-dim)">Actief: <b style="color:#fff">${esc(state.selectedModule)} ${esc(state.selectedGender)}</b> | DataSource: <b style="color:#fff">${esc(dataSource)}</b></div>`;
+  // Test ONE comp via proxy to show what the API returns
+  const testEvent = "2026_NED_0004"; // Allround
+  const testComp = 1; // First comp
+  const testUrl = `${API_BASE}/events/${testEvent}/competitions/${testComp}/results/?inSeconds=1`;
+  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(testUrl)}`;
 
-  // Test each event
-  const events = [
-    { id: "2026_NED_0004", label: "NK Allround" },
-    { id: "2026_NED_0003", label: "NK Sprint" },
-  ];
+  html += `<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">API Test: Comp 1 (NK Allround) via proxy</div>`;
+  html += `<div style="color:var(--text-dim);font-size:10px;margin-bottom:4px;word-break:break-all">${esc(proxyUrl)}</div>`;
 
-  for (const evt of events) {
-    html += `<div style="margin:12px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">${esc(evt.label)} — ${esc(evt.id)}</div>`;
+  try {
+    const resp = await fetch(proxyUrl);
+    html += `<div style="color:#68D391">HTTP ${resp.status} — ${resp.statusText}</div>`;
+    const text = await resp.text();
+    html += `<div style="color:var(--text-dim);font-size:10px">Response length: ${text.length} chars</div>`;
 
-    // Test comps 1 through 8
-    for (let compId = 1; compId <= 8; compId++) {
-      const url = `${API_BASE}/events/${evt.id}/competitions/${compId}/results/?inSeconds=1`;
-      let status = "", detail = "", color = "";
-      try {
-        const resp = await fetch(url, { headers: { "Accept": "application/json" } });
-        if (resp.ok) {
-          const data = await resp.json();
-          // Show what we got
-          if (Array.isArray(data)) {
-            const names = data.slice(0, 3).map(r => {
-              const n = r.name ?? r.Name ?? r.firstName ?? r.skaterName ?? "?";
-              const t = r.time ?? r.Time ?? r.result ?? r.totalTime ?? "?";
-              return `${n}: ${t}`;
-            }).join(", ");
-            status = `✅ ${resp.status} — ${data.length} results`;
-            detail = names + (data.length > 3 ? ", ..." : "");
-            color = "#68D391";
-          } else if (data && typeof data === "object") {
-            const keys = Object.keys(data).slice(0, 5);
-            // Check for results array inside
-            const arr = data.results ?? data.Results ?? data.data ?? null;
-            if (Array.isArray(arr)) {
-              const names = arr.slice(0, 3).map(r => {
-                const n = r.name ?? r.Name ?? r.firstName ?? "?";
-                const t = r.time ?? r.Time ?? r.result ?? "?";
-                return `${n}: ${t}`;
-              }).join(", ");
-              status = `✅ ${resp.status} — obj.results: ${arr.length} items`;
-              detail = names;
-              color = "#68D391";
-            } else {
-              status = `⚠️ ${resp.status} — object (keys: ${keys.join(", ")})`;
-              detail = JSON.stringify(data).slice(0, 200);
-              color = "#F6AD55";
-            }
-          } else {
-            status = `⚠️ ${resp.status} — unexpected type: ${typeof data}`;
-            detail = String(data).slice(0, 100);
-            color = "#F6AD55";
-          }
-        } else {
-          status = `❌ HTTP ${resp.status}`;
-          try { detail = (await resp.text()).slice(0, 100); } catch(_) {}
-          color = "#FC8181";
-        }
-      } catch (err) {
-        status = `❌ FOUT: ${err.message}`;
-        detail = err.name === "TypeError" ? "Waarschijnlijk CORS-blokkade!" : "";
-        color = "#FC8181";
-      }
+    // Show raw response (first 500 chars)
+    html += `<div style="margin:8px 0 4px;font-weight:700;color:#F6AD55">Ruwe response (eerste 500 tekens):</div>`;
+    html += `<div style="background:rgba(0,0,0,.3);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;font-size:10px;color:#ddd;max-height:150px;overflow-y:auto">${esc(text.slice(0, 500))}</div>`;
 
-      // Check what our mapping says this compId should be
-      let mapping = "—";
-      for (const [modKey, modData] of Object.entries(LIVE_URLS)) {
-        if (modData.eventId !== evt.id) continue;
-        for (const [genKey, genData] of Object.entries(modData)) {
-          if (genKey === "eventId") continue;
-          for (const [distKey, distData] of Object.entries(genData)) {
-            if (distData.compId === compId) {
-              const dist = MODULE_CONFIG[modKey]?.genders[genKey]?.distances.find(d => d.key === distKey);
-              mapping = `${genKey === "v" ? "♀" : "♂"} ${dist?.label ?? distKey}`;
+    // Try to parse
+    try {
+      const data = JSON.parse(text);
+      html += `<div style="margin:8px 0 4px;font-weight:700;color:#68D391">✅ JSON parsed — type: ${Array.isArray(data) ? "array" : typeof data}</div>`;
+
+      // Show keys if object
+      if (!Array.isArray(data) && typeof data === "object") {
+        html += `<div style="color:#fff;font-size:11px">Top-level keys: ${Object.keys(data).join(", ")}</div>`;
+
+        // Dig into common nested arrays
+        for (const key of ["results", "Results", "data", "competitors", "entries"]) {
+          if (Array.isArray(data[key])) {
+            html += `<div style="color:#68D391;font-size:11px">data.${key}: ${data[key].length} items</div>`;
+            if (data[key].length > 0) {
+              html += `<div style="color:#fff;font-size:10px">First item keys: ${Object.keys(data[key][0]).join(", ")}</div>`;
+              html += `<div style="background:rgba(0,0,0,.3);padding:6px;border-radius:4px;font-size:10px;color:#ddd;max-height:100px;overflow-y:auto">${esc(JSON.stringify(data[key][0], null, 1))}</div>`;
             }
           }
         }
       }
 
-      html += `<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)">
-        <div style="color:${color}"><b>Comp ${compId}</b> [Mapping: ${esc(mapping)}] — ${status}</div>
-        ${detail ? `<div style="color:var(--text-dim);font-size:11px;margin-top:2px;word-break:break-all">${esc(detail)}</div>` : ""}
-      </div>`;
+      // If array, show first item
+      if (Array.isArray(data) && data.length > 0) {
+        html += `<div style="color:#68D391;font-size:11px">Array: ${data.length} items</div>`;
+        html += `<div style="color:#fff;font-size:10px">First item keys: ${Object.keys(data[0]).join(", ")}</div>`;
+        html += `<div style="background:rgba(0,0,0,.3);padding:6px;border-radius:4px;font-size:10px;color:#ddd;max-height:100px;overflow-y:auto">${esc(JSON.stringify(data[0], null, 1))}</div>`;
+      }
+
+      // Run through our parser
+      const parsed = parseKnsbResponse(data);
+      html += `<div style="margin:8px 0 4px;font-weight:700;color:#F6AD55">parseKnsbResponse resultaat:</div>`;
+      if (parsed && parsed.length > 0) {
+        html += `<div style="color:#68D391">${parsed.length} resultaten geparsed</div>`;
+        for (const r of parsed.slice(0, 5)) {
+          html += `<div style="color:#fff;font-size:11px">${esc(r.name)} → ${esc(r.time)} (status: ${esc(r.status)}, pb: ${r.pb})</div>`;
+        }
+      } else {
+        html += `<div style="color:#FC8181">❌ Parser retourneerde null/leeg! Data structuur niet herkend.</div>`;
+      }
+    } catch (parseErr) {
+      html += `<div style="color:#FC8181">❌ JSON parse error: ${esc(parseErr.message)}</div>`;
     }
+  } catch (fetchErr) {
+    html += `<div style="color:#FC8181">❌ Fetch error: ${esc(fetchErr.message)}</div>`;
   }
 
-  // Show last fetch log
-  html += '<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Laatste fetch log</div>';
-  if (lastFetchLog.length === 0) {
-    html += '<div style="color:var(--text-dim)">Geen fetch pogingen gelogd</div>';
-  } else {
-    for (const log of lastFetchLog) {
-      const c = log.status?.startsWith("ok") ? "#68D391" : "#FC8181";
-      html += `<div style="padding:2px 0;color:${c}">[comp ${log.compId}] ${esc(log.status)} ${log.url ? "— " + esc(log.url) : ""}</div>`;
+  // Show ALL comp IDs quickly (just status)
+  html += `<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Alle comps (via fetchCompetitionResults)</div>`;
+  for (let compId = 1; compId <= 8; compId++) {
+    const data = await fetchCompetitionResults(testEvent, compId);
+    const parsed = parseKnsbResponse(data);
+    let mapping = "—";
+    for (const [gk, gd] of Object.entries(LIVE_URLS.allround)) {
+      if (gk === "eventId") continue;
+      for (const [dk, dd] of Object.entries(gd)) {
+        if (dd.compId === compId) {
+          const dist = MODULE_CONFIG.allround?.genders[gk]?.distances.find(d => d.key === dk);
+          mapping = `${gk === "v" ? "♀" : "♂"} ${dist?.label ?? dk}`;
+        }
+      }
     }
+    const names = parsed ? parsed.slice(0, 2).map(r => r.name).join(", ") : "geen data";
+    const c = parsed ? "#68D391" : "#FC8181";
+    html += `<div style="padding:2px 0;color:${c}"><b>Comp ${compId}</b> [${esc(mapping)}] → ${parsed ? parsed.length + " results" : "❌"} (${esc(names)})</div>`;
   }
 
-  // Show manual times status
-  html += '<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Handmatige tijden</div>';
-  const mtKeys = Object.keys(MANUAL_TIMES).filter(k => Object.keys(MANUAL_TIMES[k]).length > 0);
-  if (mtKeys.length === 0) {
-    html += '<div style="color:var(--text-dim)">Geen handmatige tijden opgeslagen</div>';
-  } else {
-    for (const k of mtKeys) {
-      html += `<div style="color:#fff">${esc(k)}: ${Object.keys(MANUAL_TIMES[k]).length} tijden</div>`;
-    }
+  // Show fetch log
+  html += '<div style="margin:16px 0 6px;font-weight:700;color:var(--accent);border-top:1px solid var(--border);padding-top:8px">Fetch log</div>';
+  for (const log of lastFetchLog.slice(-10)) {
+    const c = log.status?.startsWith("ok") ? "#68D391" : "#FC8181";
+    html += `<div style="padding:1px 0;color:${c};font-size:11px">[comp ${log.compId}] ${esc(log.status)}</div>`;
   }
 
   content.innerHTML = html;
